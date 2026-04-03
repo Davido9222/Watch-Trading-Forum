@@ -12,10 +12,4 @@
     "paths": {
       "@/*": ["./src/*"]
     }
-  },
-  "references": [
-    {
-      "path": "./src/lib/api-client-react/tsconfig.json"
-    }
-  ]
-}
+  }

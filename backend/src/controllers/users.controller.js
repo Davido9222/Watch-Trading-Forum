@@ -39,7 +39,6 @@ exports.uploadAvatar = async (req, res) => {
   if (!user) return res.status(404).json({ message: 'User not found' });
   if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
 
-  // Convert the image to a base64 data URL — stores directly in MongoDB
   const base64 = req.file.buffer.toString('base64');
   const avatar = `data:${req.file.mimetype};base64,${base64}`;
 

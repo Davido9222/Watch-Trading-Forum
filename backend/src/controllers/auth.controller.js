@@ -70,6 +70,10 @@ exports.login = async (req, res) => {
     if (user.isBanned) return res.status(403).json({ message: user.banReason || 'Account is banned' });
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) return res.status(400).json({ message: 'Invalid email or password' });
+    // Pause login if 2FA is enabled — frontend will ask for the 6-digit code
+    if (user.twoFactorEnabled) {
+     return res.json({ requires2FA: true, pendingUserId: user._id.toString() });
+    }
     user.lastLoginAt = new Date();
     user.lastLoginIP = req.ip;
     if (req.ip && !user.knownIPs.includes(req.ip)) user.knownIPs.push(req.ip);

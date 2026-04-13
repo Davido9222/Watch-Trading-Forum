@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const twofaRoutes = require('./routes/twofa.routes');
 
 const authRoutes = require('./routes/auth.routes');
 const usersRoutes = require('./routes/users.routes');
@@ -23,6 +24,7 @@ app.use('/api/threads', threadsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/profile-updates', profileUpdatesRoutes);
 app.use('/api/uploads', uploadsRoutes);
+app.use('/api/2fa', twofaRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

@@ -160,13 +160,37 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   changePassword: async (oldPassword, newPassword) => { try { await api.post('/users/me/change-password', { oldPassword, newPassword }); return { success: true }; } catch (e) { return { success: false, error: e instanceof Error ? e.message : 'Failed' }; } },
   updateSocialMedia: async (socialMedia) => { try { await get().updateProfile({ socialMedia }); return { success: true }; } catch (e) { return { success: false, error: e instanceof Error ? e.message : 'Failed' }; } },
   updateProfileSettings: async (profileSettings) => { try { await get().updateProfile({ profileSettings }); return { success: true }; } catch (e) { return { success: false, error: e instanceof Error ? e.message : 'Failed' }; } },
-  promoteToAdmin: () => ({ success: false, error: 'Not implemented yet' }),
-  demoteAdmin: () => ({ success: false, error: 'Not implemented yet' }),
+  promoteToAdmin: async (userId: string) => {
+   try {
+    await api.patch(`/users/${userId}/role`, { role: 'admin' });
+    await get().refreshUsers();
+    return { success: true };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
+  demoteAdmin: async (userId: string) => {
+   try {
+    await api.patch(`/users/${userId}/role`, { role: 'user' });
+    await get().refreshUsers();
+    return { success: true };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
   getAdmins: () => get().users.filter(u => u.role === 'admin'),
   getAdminBanRecords: (adminId) => get().banRecords.filter(b => b.bannedBy === adminId),
   viewRecoveryPhrase: (userId) => get().users.find(u => u.id === userId)?.recoveryPhrase,
-  banUser: () => ({ success: false, error: 'Not implemented yet' }),
-  unbanUser: () => ({ success: false, error: 'Not implemented yet' }),
+  banUser: async (userId: string, reason: string) => {
+   try {
+    await api.post(`/users/${userId}/ban`, { reason });
+    await get().refreshUsers();
+    return { success: true };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
+  unbanUser: async (userId: string) => {
+   try {
+    await api.del(`/users/${userId}/ban`);
+    await get().refreshUsers();
+    return { success: true };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
   getBanRecords: () => get().banRecords,
   getBanRecordsByAdmin: (adminId) => get().banRecords.filter(r => r.bannedBy === adminId),
   canBanMoreUsers: () => ({ allowed: false, remaining: 0, maxPerHour: 0 }),
@@ -183,13 +207,40 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   removeBadge: () => undefined,
   toggleBadgeVisibility: () => undefined,
   checkAndAwardAccountAgeBadges: () => undefined,
-  enable2FA: () => ({ success: false, error: 'Not implemented yet' }),
-  disable2FA: () => ({ success: false, error: 'Not implemented yet' }),
-  verify2FA: () => ({ success: false, error: 'Not implemented yet' }),
+  enable2FA: async () => {
+   try {
+    const data = await api.post('/2fa/setup');
+    return { success: true, qrCodeURL: data.qrCodeURL, secret: data.secret };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
+  disable2FA: async () => {
+   try {
+    await api.post('/2fa/disable');
+    set(state => ({ currentUser: state.currentUser ? { ...state.currentUser, twoFactorEnabled: false } : null }));
+    return { success: true };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
+  verify2FA: async (token: string) => {
+   try {
+    await api.post('/2fa/enable', { token });
+    set(state => ({ currentUser: state.currentUser ? { ...state.currentUser, twoFactorEnabled: true } : null }));
+    return { success: true };
+   } catch (e: any) { return { success: false, error: e.message }; }
+  },
   setRecoveryPhrase: () => ({ success: false, error: 'Not implemented yet' }),
   generateRecoveryPhrase: () => Array.from({ length: 12 }, () => ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','india','juliet','kilo','lima','mike','november','oscar','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'][Math.floor(Math.random()*26)]).join(' '),
-  updateFlappyStats: () => undefined,
-  getFlappyLeaderboard: () => emptyArray,
+  updateFlappyStats: async (_userId: string, score: number) => {
+   try {
+    await api.post('/users/me/flappy-stats', { score });
+    await get().refreshUsers();
+   } catch (_e) {}
+  },
+  getFlappyLeaderboard: async () => {
+   try {
+    const data = await api.get('/users/leaderboard/flappy');
+    return data.leaderboard;
+   } catch (_e) { return []; }
+  },
   getFlappyTotalLeaderboard: () => emptyArray,
   assignDonorGif: () => undefined,
   removeDonorGif: () => undefined,

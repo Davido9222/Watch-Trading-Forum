@@ -166,8 +166,33 @@ export const ProfilePage: React.FC = () => {
   const [ipInfo, setIpInfo] = useState<{ ip: string; sameIPUsers: any[] }>({ ip: '', sameIPUsers: [] });
   const [editForm, setEditForm] = useState({ motto: '', phone: '' });
 
-  const profileUser = username ? getUserByUsername(username) : undefined;
-  const isOwnProfile = isAuthenticated && currentUser?.username === username;
+  const [profileUser, setProfileUser] = useState<any>(
+  username ? getUserByUsername(username) : undefined
+);
+const [profileLoading, setProfileLoading] = useState(!profileUser);
+const isOwnProfile = isAuthenticated && currentUser?.username === username;
+
+useEffect(() => {
+  if (!username) return;
+  // Always fetch fresh from the API — works for all users regardless of role
+  api.get(`/users/${username}`)
+    .then(data => {
+      setProfileUser(data.user);
+      setProfileLoading(false);
+    })
+    .catch(() => {
+      setProfileUser(null);
+      setProfileLoading(false);
+    });
+}, [username]);
+
+// When the current user updates their own profile (avatar, motto, etc.),
+// keep the profile view in sync
+useEffect(() => {
+  if (isOwnProfile && currentUser) {
+    setProfileUser(currentUser);
+  }
+}, [currentUser, isOwnProfile]);
 
   useEffect(() => {
     if (profileUser) {

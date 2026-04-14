@@ -38,8 +38,12 @@ class SoundManager {
   private enabled = true;
   private audioContext: AudioContext | null = null;
 
-  constructor() {
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    constructor() {
+    try {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    } catch (e) {
+      this.audioContext = null;
+    }
   }
 
   enable() {

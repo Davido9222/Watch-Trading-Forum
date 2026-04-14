@@ -22,6 +22,7 @@ import { Switch } from '@/components/ui/switch';
 import { UserBadge, DonorBadge, EarnedBadges } from '@/components/user/UserBadge';
 import { useFlappyStore, AVAILABLE_BADGES } from '@/stores/flappyStore';
 import { uploadImage } from '@/utils/imageUpload';
+import { api } from '@/lib/api';
 import { Edit, MessageSquare, FileText, Calendar, Trash2, Plus, Camera, Shield, Key, Copy, Check, Award, Coins, Globe, MessageCircle, UserCog, AlertTriangle, Phone, Youtube, Twitter, Instagram } from 'lucide-react';
 
 // ============================================
@@ -299,6 +300,14 @@ useEffect(() => {
     });
   };
 
+  if (profileLoading) {
+   return (
+    <div className="flex items-center justify-center min-h-screen">
+      <p className="text-gray-500">Loading profile...</p>
+    </div>
+   );
+  }
+  
   if (!profileUser) {
     return (
       <div className="container mx-auto px-4 py-8">

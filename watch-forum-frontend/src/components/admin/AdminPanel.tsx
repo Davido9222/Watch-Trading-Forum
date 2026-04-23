@@ -105,14 +105,14 @@ export const AdminPanel: React.FC = () => {
   // ============================================
   // HANDLE BAN USER
   // ============================================
-  const handleBanUser = () => {
+  const handleBanUser = async () => {
     if (selectedUser && banReason.trim()) {
-      const result = banUser(selectedUser.id, banReason);
-      if (result.success) {
+      const result: any = await banUser(selectedUser.id, banReason);
+      if (result?.success) {
         setBanReason('');
         setSelectedUser(null);
       } else {
-        alert(result.error || 'Failed to ban user');
+        alert(result?.error || 'Failed to ban user');
       }
     }
   };
@@ -120,34 +120,34 @@ export const AdminPanel: React.FC = () => {
   // ============================================
   // HANDLE UNBAN USER
   // ============================================
-  const handleUnbanUser = (userId: string) => {
-    unbanUser(userId);
+  const handleUnbanUser = async (userId: string) => {
+    await unbanUser(userId);
   };
 
   // ============================================
   // HANDLE ASSIGN DONOR BADGE
   // ============================================
-  const handleAssignDonor = (userId: string, badgeUrl: string) => {
-    assignDonorGif(userId, badgeUrl);
+  const handleAssignDonor = async (userId: string, badgeUrl: string) => {
+    await Promise.resolve(assignDonorGif(userId, badgeUrl));
     // Also award the corresponding badge
     const tier = DONOR_BADGES.find(b => b.value === badgeUrl)?.tier;
     if (tier) {
-      awardBadge(userId, `donor_${tier}` as any, currentUser?.id);
+      await awardBadge(userId, `donor_${tier}` as any, currentUser?.id);
     }
   };
 
   // ============================================
   // HANDLE PROMOTE TO ADMIN
   // ============================================
-  const handlePromoteToAdmin = (userId: string) => {
-    promoteToAdmin(userId);
+  const handlePromoteToAdmin = async (userId: string) => {
+    await promoteToAdmin(userId);
   };
 
   // ============================================
   // HANDLE DEMOTE ADMIN
   // ============================================
-  const handleDemoteAdmin = (userId: string) => {
-    demoteAdmin(userId);
+  const handleDemoteAdmin = async (userId: string) => {
+    await demoteAdmin(userId);
   };
 
   // ============================================
@@ -164,8 +164,11 @@ export const AdminPanel: React.FC = () => {
   // ============================================
   // HANDLE ASSIGN SPECIAL BADGE
   // ============================================
-  const handleAssignBadge = (userId: string, badgeType: 'vip' | 'mvp' | 'goat') => {
-    awardBadge(userId, badgeType, currentUser?.id);
+  const handleAssignBadge = async (userId: string, badgeType: 'vip' | 'mvp' | 'goat') => {
+    const result: any = await awardBadge(userId, badgeType, currentUser?.id);
+    if (result && result.success === false) {
+      alert(result.error || 'Failed to award badge');
+    }
   };
 
   // ============================================
@@ -846,14 +849,14 @@ export const AdminPanel: React.FC = () => {
               </div>
               <Button 
                 className="mt-4 bg-red-600 hover:bg-red-700"
-                onClick={() => {
+                onClick={async () => {
                   if (selectedUser && hallOfShameReason.trim()) {
-                    const result = applyHallOfShame(selectedUser.id, hallOfShameReason, hallOfShameDuration);
-                    if (result.success) {
+                    const result: any = await applyHallOfShame(selectedUser.id, hallOfShameReason, hallOfShameDuration);
+                    if (result?.success) {
                       setSelectedUser(null);
                       setHallOfShameReason('');
                     } else {
-                      alert(result.error);
+                      alert(result?.error || 'Failed to apply Hall of Shame');
                     }
                   }
                 }}

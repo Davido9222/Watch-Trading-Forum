@@ -1,9 +1,11 @@
 // ============================================
-// MEMBERS PAGE
-// Search and browse all forum members
+// MEMBERS PAGE — public member directory
+// Anyone (logged in or not) can browse members.
+// On mount we call loadPublicUsers() so the list
+// is populated even when no token is present.
 // ============================================
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/button';
@@ -15,39 +17,50 @@ import { UserBadge, DonorBadge } from '@/components/user/UserBadge';
 import { Search, Users, MessageSquare, ArrowLeft } from 'lucide-react';
 
 export const MembersPage: React.FC = () => {
-  const { getAllUsers, currentUser, isAuthenticated } = useAuthStore();
+  const { getAllUsers, currentUser, isAuthenticated, loadPublicUsers, refreshUsers, isAdmin } = useAuthStore();
   const [searchQuery, setSearchQuery] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Public list works even when logged-out; admins also pull the full list
+        await loadPublicUsers();
+        if (isAuthenticated && isAdmin()) {
+          await refreshUsers();
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [loadPublicUsers, refreshUsers, isAuthenticated, isAdmin]);
 
   const allUsers = getAllUsers();
-  
-  // Filter users by search query
-  const filteredUsers = allUsers.filter(user => {
+
+  const filteredUsers = allUsers.filter((user) => {
     const query = searchQuery.toLowerCase();
     return (
       user.username.toLowerCase().includes(query) ||
-      user.motto.toLowerCase().includes(query)
+      (user.motto || '').toLowerCase().includes(query)
     );
   });
 
-  // Sort: Active users first, then by post count
-  const sortedUsers = filteredUsers.sort((a, b) => {
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
     if (a.isBanned !== b.isBanned) return a.isBanned ? 1 : -1;
-    return b.postCount - a.postCount;
+    return (b.postCount || 0) - (a.postCount || 0);
   });
 
-  // Format join date
   const formatJoinDate = (dateString: string) => {
+    if (!dateString) return '';
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      year: 'numeric' 
-    });
+    return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   };
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="container mx-auto px-4">
-        {/* Header */}
         <div className="mb-8">
           <Link to="/" className="text-sm text-gray-600 hover:text-blue-600 flex items-center gap-1 mb-4">
             <ArrowLeft className="h-4 w-4" />
@@ -69,7 +82,6 @@ export const MembersPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Search Bar */}
         <Card className="mb-6">
           <CardContent className="p-4">
             <div className="relative">
@@ -84,7 +96,6 @@ export const MembersPage: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Results Count */}
         {searchQuery && (
           <p className="text-gray-600 mb-4">
             Found {sortedUsers.length} member{sortedUsers.length !== 1 ? 's' : ''}
@@ -92,8 +103,11 @@ export const MembersPage: React.FC = () => {
           </p>
         )}
 
-        {/* Members Grid */}
-        {sortedUsers.length === 0 ? (
+        {loading ? (
+          <div className="text-center py-16">
+            <p className="text-gray-500">Loading members…</p>
+          </div>
+        ) : sortedUsers.length === 0 ? (
           <div className="text-center py-16">
             <Users className="h-16 w-16 mx-auto text-gray-300 mb-4" />
             <h2 className="text-xl font-semibold text-gray-700">No members found</h2>
@@ -102,13 +116,12 @@ export const MembersPage: React.FC = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {sortedUsers.map((user) => (
-              <Card 
-                key={user.id} 
+              <Card
+                key={user.id}
                 className={`hover:shadow-lg transition-shadow ${user.isBanned ? 'opacity-60' : ''}`}
               >
                 <CardContent className="p-4">
                   <div className="flex items-start gap-4">
-                    {/* Avatar */}
                     <Link to={`/profile/${user.username}`} className="flex-shrink-0">
                       <Avatar className="h-16 w-16">
                         <AvatarImage src={user.avatar} />
@@ -118,10 +131,9 @@ export const MembersPage: React.FC = () => {
                       </Avatar>
                     </Link>
 
-                    {/* User Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <Link 
+                        <Link
                           to={`/profile/${user.username}`}
                           className="font-semibold text-gray-900 hover:text-blue-600 truncate"
                         >
@@ -130,40 +142,31 @@ export const MembersPage: React.FC = () => {
                         <UserBadge role={user.role} size="sm" />
                       </div>
 
-                      {/* Donor Badge */}
                       {user.donorGif && (
                         <div className="mb-2">
                           <DonorBadge gifUrl={user.donorGif} size="sm" />
                         </div>
                       )}
 
-                      {/* Motto */}
                       {user.motto && (
                         <p className="text-sm text-gray-500 italic truncate mb-2">
                           "{user.motto}"
                         </p>
                       )}
 
-                      {/* Stats */}
                       <div className="flex items-center gap-3 text-xs text-gray-500">
-                        <span>{user.postCount} posts</span>
-                        <span>{user.commentCount} comments</span>
+                        <span>{user.postCount || 0} posts</span>
+                        <span>{user.commentCount || 0} comments</span>
                         <span>Joined {formatJoinDate(user.createdAt)}</span>
                       </div>
 
-                      {/* Banned Badge */}
                       {user.isBanned && (
-                        <Badge className="mt-2 bg-red-600 text-white">
-                          Banned
-                        </Badge>
+                        <Badge className="mt-2 bg-red-600 text-white">Banned</Badge>
                       )}
 
-                      {/* Action Buttons */}
                       <div className="mt-3 flex gap-2">
                         <Link to={`/profile/${user.username}`}>
-                          <Button variant="outline" size="sm">
-                            View Profile
-                          </Button>
+                          <Button variant="outline" size="sm">View Profile</Button>
                         </Link>
                         {isAuthenticated && currentUser?.id !== user.id && !user.isBanned && (
                           <Link to={`/messages?to=${user.username}`}>

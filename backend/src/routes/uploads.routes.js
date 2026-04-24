@@ -1,17 +1,30 @@
 const express = require('express');
 const { auth } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
+const { uploadBuffer } = require('../config/cloudinary');
+
 const router = express.Router();
 
-router.post('/image', auth, upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
+// POST /api/uploads/image
+// Returns: { url: "https://res.cloudinary.com/.../image/upload/.../watch-forum/..." }
+router.post('/image', auth, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
 
-  // Convert the image buffer to a base64 data URL
-  // This stores the image as a string — no file system needed, works on Render
-  const base64 = req.file.buffer.toString('base64');
-  const url = `data:${req.file.mimetype};base64,${base64}`;
+    const { url } = await uploadBuffer(req.file, {
+      folder: 'watch-forum/posts',
+      transformation: [
+        { width: 1600, height: 1600, crop: 'limit' },
+        { quality: 'auto:good' },
+        { fetch_format: 'auto' },
+      ],
+    });
 
-  res.json({ url });
+    res.json({ url });
+  } catch (err) {
+    console.error('Upload failed:', err);
+    res.status(500).json({ message: err.message || 'Image upload failed' });
+  }
 });
 
 module.exports = router;

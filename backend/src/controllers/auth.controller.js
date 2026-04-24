@@ -1,3 +1,14 @@
+// ============================================
+// AUTH CONTROLLER
+// sanitizeUser now exposes:
+//   • bannedBy            (id of admin who banned)
+//   • bannedByUsername    (username of admin who banned)
+//   • bannedAt            (timestamp of ban)
+//   • lastThreadAt / lastCommentAt   (used for 1/min rate limit display)
+// so the Admin Panel "Banned Users" tab can show a real
+// "Banned by" name instead of "Unknown".
+// ============================================
+
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const { signToken } = require('../utils/token');
@@ -16,6 +27,9 @@ function sanitizeUser(user) {
     badges: obj.badges || [],
     isBanned: !!obj.isBanned,
     banReason: obj.banReason || undefined,
+    bannedBy: obj.bannedBy ? obj.bannedBy.toString() : undefined,
+    bannedByUsername: obj.bannedByUsername || undefined,
+    bannedAt: obj.bannedAt || undefined,
     postCount: obj.postCount || 0,
     commentCount: obj.commentCount || 0,
     createdAt: obj.createdAt,
@@ -35,6 +49,8 @@ function sanitizeUser(user) {
     hallOfShame: obj.hallOfShame || undefined,
     lastLoginAt: obj.lastLoginAt || undefined,
     lastLoginIP: obj.lastLoginIP || undefined,
+    lastThreadAt: obj.lastThreadAt || undefined,
+    lastCommentAt: obj.lastCommentAt || undefined,
   };
 }
 
@@ -70,9 +86,8 @@ exports.login = async (req, res) => {
     if (user.isBanned) return res.status(403).json({ message: user.banReason || 'Account is banned' });
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) return res.status(400).json({ message: 'Invalid email or password' });
-    // Pause login if 2FA is enabled — frontend will ask for the 6-digit code
     if (user.twoFactorEnabled) {
-     return res.json({ requires2FA: true, pendingUserId: user._id.toString() });
+      return res.json({ requires2FA: true, pendingUserId: user._id.toString() });
     }
     user.lastLoginAt = new Date();
     user.lastLoginIP = req.ip;

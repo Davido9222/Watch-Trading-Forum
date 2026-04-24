@@ -12,6 +12,9 @@ const userSchema = new mongoose.Schema({
   badges: { type: Array, default: [] },
   isBanned: { type: Boolean, default: false },
   banReason: { type: String, default: '' },
+  bannedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  bannedByUsername: { type: String, default: '' },
+  bannedAt: { type: Date, default: null },
   postCount: { type: Number, default: 0 },
   commentCount: { type: Number, default: 0 },
   twoFactorEnabled: { type: Boolean, default: false },
@@ -38,7 +41,10 @@ const userSchema = new mongoose.Schema({
   language: { type: String, default: 'en' },
   karma: { type: Number, default: 0 },
   mutedThreads: { type: Array, default: [] },
-  hallOfShame: { type: Object, default: null }
+  hallOfShame: { type: Object, default: null },
+  // Per-user rate-limit timestamps (for 1 thread / 1 comment per minute)
+  lastThreadAt: { type: Date, default: null },
+  lastCommentAt: { type: Date, default: null }
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

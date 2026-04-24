@@ -1457,7 +1457,7 @@ const SettingsTab: React.FC = () => {
               
               <div className="bg-gray-100 p-4 rounded-lg mb-4">
                 <p className="text-sm font-mono mb-2 break-all">Secret Key: {twoFactorSecret}</p>
-                <p className="text-xs text-gray-500">Save this key in case you lose access to your authenticator app</p>
+                <p className="text-xs text-gray-500">"Please copy and paste this key into setup key in authentication app if the QRCODE doesn't scan"</p>
               </div>
               <div className="flex gap-2 mb-4">
                 <Input

@@ -9,6 +9,8 @@ const threadsRoutes = require('./routes/threads.routes');
 const messagesRoutes = require('./routes/messages.routes');
 const profileUpdatesRoutes = require('./routes/profile-updates.routes');
 const uploadsRoutes = require('./routes/uploads.routes');
+const notificationsRoutes = require('./routes/notifications.routes');
+const shoutsRoutes = require('./routes/shouts.routes');
 
 const app = express();
 
@@ -25,6 +27,8 @@ app.use('/api/messages', messagesRoutes);
 app.use('/api/profile-updates', profileUpdatesRoutes);
 app.use('/api/uploads', uploadsRoutes);
 app.use('/api/2fa', twofaRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/shouts', shoutsRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

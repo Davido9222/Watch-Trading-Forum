@@ -54,8 +54,26 @@ function mapComment(comment) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// listThreads
+// ---------------------------------------------------------------------------
+// Two important changes vs. the original:
+//   1. .allowDiskUse(true) lets MongoDB spill the sort to disk if it ever
+//      exceeds the 32 MB in-memory sort limit again. This is a belt-and-
+//      braces fix on top of the new compound index.
+//   2. Excluded the heavy `images` field from the list response. The forum
+//      list view doesn't render the inline images anyway — they're only
+//      needed on the thread detail page, which is fetched by getThread.
+//      This keeps each thread document small in the wire response and in
+//      the in-memory result set.
+// The frontend keeps working: mapThread always returns images: [] when
+// the field is absent, so any UI code that reads thread.images sees an
+// empty array on the list page (just as if the thread had no images).
+// ---------------------------------------------------------------------------
 exports.listThreads = async (_req, res) => {
-  const threads = await Thread.find().sort({ isPinned: -1, createdAt: -1 });
+  const threads = await Thread.find({}, { images: 0 })
+    .sort({ isPinned: -1, createdAt: -1 })
+    .allowDiskUse(true);
   res.json({ threads: threads.map(mapThread) });
 };
 
@@ -83,6 +101,13 @@ exports.createThread = async (req, res) => {
   const { title, content, sectionId, sectionName, images = [] } = req.body;
   if (!title || !sectionId || !sectionName) return res.status(400).json({ message: 'Missing required fields' });
 
+  // Defensive: refuse to store base64 image blobs inside the document.
+  // All images must be hosted (Cloudinary returns proper https URLs).
+  // Without this guard, even one buggy client could refill the database.
+  const safeImages = Array.isArray(images)
+    ? images.filter((u) => typeof u === 'string' && !u.startsWith('data:'))
+    : [];
+
   const thread = await Thread.create({
     title,
     content: content || '',
@@ -94,7 +119,7 @@ exports.createThread = async (req, res) => {
     authorDonorGif: user.donorGif || '',
     sectionId,
     sectionName,
-    images,
+    images: safeImages,
   });
   user.postCount += 1;
   user.lastThreadAt = new Date();
@@ -144,6 +169,11 @@ exports.createComment = async (req, res) => {
   const { content, images = [] } = req.body;
   if (!content && images.length === 0) return res.status(400).json({ message: 'Comment cannot be empty' });
 
+  // Defensive: same base64 guard as createThread.
+  const safeImages = Array.isArray(images)
+    ? images.filter((u) => typeof u === 'string' && !u.startsWith('data:'))
+    : [];
+
   const comment = await Comment.create({
     threadId: thread._id,
     content: content || '',
@@ -155,7 +185,7 @@ exports.createComment = async (req, res) => {
     authorDonorGif: user.donorGif || '',
     authorBadges: user.badges || [],
     authorHallOfShame: user.hallOfShame || undefined,
-    images,
+    images: safeImages,
   });
   thread.commentCount += 1;
   thread.lastCommentAt = new Date();

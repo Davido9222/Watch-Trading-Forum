@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const { sanitizeUser } = require('./auth.controller');
+const { uploadBuffer } = require('../config/cloudinary');
 
 exports.listUsers = async (_req, res) => {
   const users = await User.find().sort({ createdAt: -1 });
@@ -13,20 +14,47 @@ exports.getUserByUsername = async (req, res) => {
 };
 
 exports.updateMe = async (req, res) => {
-  const allowed = ['motto', 'phone', 'avatar', 'email', 'username', 'socialMedia', 'profileSettings', 'country', 'language'];
+  const allowed = [
+    'motto',
+    'phone',
+    'avatar',
+    'email',
+    'username',
+    'socialMedia',
+    'profileSettings',
+    'country',
+    'language',
+  ];
   const updates = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) updates[key] = req.body[key];
   }
+
+  // Defensive: never let a base64 data: URL be written into the avatar field.
+  // Avatars must be hosted URLs (Cloudinary, Dicebear, etc.) — anything else
+  // would balloon the document and refill the database.
+  if (typeof updates.avatar === 'string' && updates.avatar.startsWith('data:')) {
+    return res.status(400).json({
+      message:
+        'Avatar must be a hosted image URL. Use the avatar upload endpoint instead.',
+    });
+  }
+
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
   if (updates.email && updates.email !== user.email) {
-    const exists = await User.findOne({ email: updates.email.toLowerCase(), _id: { $ne: user._id } });
+    const exists = await User.findOne({
+      email: updates.email.toLowerCase(),
+      _id: { $ne: user._id },
+    });
     if (exists) return res.status(400).json({ message: 'Email already in use' });
     updates.email = updates.email.toLowerCase();
   }
   if (updates.username && updates.username !== user.username) {
-    const exists = await User.findOne({ username: updates.username, _id: { $ne: user._id } });
+    const exists = await User.findOne({
+      username: updates.username,
+      _id: { $ne: user._id },
+    });
     if (exists) return res.status(400).json({ message: 'Username already taken' });
   }
   Object.assign(user, updates);
@@ -35,16 +63,27 @@ exports.updateMe = async (req, res) => {
 };
 
 exports.uploadAvatar = async (req, res) => {
-  const user = await User.findById(req.user.id);
-  if (!user) return res.status(404).json({ message: 'User not found' });
-  if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
 
-  const base64 = req.file.buffer.toString('base64');
-  const avatar = `data:${req.file.mimetype};base64,${base64}`;
+    const { url } = await uploadBuffer(req.file, {
+      folder: 'watch-forum/avatars',
+      transformation: [
+        { width: 512, height: 512, crop: 'fill', gravity: 'face' },
+        { quality: 'auto:good' },
+        { fetch_format: 'auto' },
+      ],
+    });
 
-  user.avatar = avatar;
-  await user.save();
-  res.json({ url: avatar, user: sanitizeUser(user) });
+    user.avatar = url;
+    await user.save();
+    res.json({ url, user: sanitizeUser(user) });
+  } catch (err) {
+    console.error('Avatar upload failed:', err);
+    res.status(500).json({ message: err.message || 'Avatar upload failed' });
+  }
 };
 
 exports.changePassword = async (req, res) => {

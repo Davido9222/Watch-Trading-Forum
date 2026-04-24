@@ -193,14 +193,6 @@ export const LoginPage: React.FC = () => {
                 </button>
               </div>
             </div>
-
-            {/* Demo Accounts Info */}
-            <div className="bg-blue-50 p-3 rounded-lg text-sm">
-              <p className="font-medium text-blue-900 mb-1">Demo Accounts:</p>
-              <p className="text-blue-700">Owner: owner@watchtradingforums.com / owner123</p>
-              <p className="text-blue-700">Admin: admin1@watchtradingforums.com / admin123</p>
-              <p className="text-blue-700">User: user@example.com / user123</p>
-            </div>
           </CardContent>
           
           <CardFooter className="flex flex-col gap-4">

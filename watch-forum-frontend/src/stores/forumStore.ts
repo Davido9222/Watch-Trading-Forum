@@ -36,7 +36,8 @@ interface ForumState {
   getCommentsByThread: (threadId: string) => Comment[];
   getCommentsByUser: (userId: string) => Comment[];
   deleteComment: (commentId: string) => void;
-  voteComment: (commentId: string, userId: string, vote: 'up' | 'down') => { karmaChange: number; authorId: string | null };
+  // Now async — hits backend so karma is updated server-side and stays in sync
+  voteComment: (commentId: string, userId: string, vote: 'up' | 'down') => Promise<{ karmaChange: number; authorId: string | null; authorKarma?: number }>;
   removeVote: (commentId: string, userId: string) => void;
   getUserVote: (commentId: string, userId: string) => 'up' | 'down' | null;
   getUserActivity: (userId: string) => { threads: Thread[]; comments: Comment[] };
@@ -119,7 +120,8 @@ export const useForumStore = create<ForumState>((set, get) => ({
   canCreateThread: (userId) => {
     const last = get().lastThreadTimes[userId];
     if (!last) return { allowed: true };
-    const rem = 30*60*1000 - (Date.now() - new Date(last).getTime());
+    // 1 thread per minute (matches the new server-side rate limit)
+    const rem = 60 * 1000 - (Date.now() - new Date(last).getTime());
     return rem <= 0 ? { allowed: true } : { allowed: false, timeRemaining: rem };
   },
   getLastThreadTime: (userId) => get().lastThreadTimes[userId] || null,
@@ -145,15 +147,21 @@ export const useForumStore = create<ForumState>((set, get) => ({
   getCommentsByThread: (threadId) => get().comments.filter(c => c.threadId === threadId).sort((a,b)=>new Date(a.createdAt).getTime()-new Date(b.createdAt).getTime()),
   getCommentsByUser: (userId) => get().comments.filter(c => c.authorId === userId).sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime()),
   deleteComment: (commentId) => set(state => ({ comments: state.comments.filter(c => c.id !== commentId) })),
-  voteComment: (commentId, userId, vote) => {
-    const comment = get().comments.find(c => c.id === commentId); if (!comment) return { karmaChange: 0, authorId: null };
-    const existing = comment.votes.find(v => v.userId === userId);
-    let votes = [...comment.votes]; let up = comment.upvotes; let down = comment.downvotes; let karma = 0;
-    if (existing?.vote === vote) { votes = votes.filter(v => v.userId !== userId); if (vote==='up'){up-=1;karma=-1}else{down-=1;karma=1} }
-    else if (existing) { votes = votes.map(v => v.userId===userId ? { ...v, vote, votedAt: new Date().toISOString() } : v); if (vote==='up'){up+=1;down-=1;karma=2}else{up-=1;down+=1;karma=-2} }
-    else { votes.push({ userId, vote, votedAt: new Date().toISOString() }); if (vote==='up'){up+=1;karma=1}else{down+=1;karma=-1} }
-    set(state => ({ comments: state.comments.map(c => c.id===commentId ? { ...c, votes, upvotes: Math.max(0,up), downvotes: Math.max(0,down) } : c) }));
-    return { karmaChange: karma, authorId: comment.authorId };
+  voteComment: async (commentId, _userId, vote) => {
+    try {
+      const data = await api.post(`/threads/comments/${commentId}/vote`, { vote });
+      const updated = data.comment as Comment;
+      set(state => ({
+        comments: state.comments.map(c => c.id === updated.id ? updated : c),
+      }));
+      return {
+        karmaChange: data.karmaChange || 0,
+        authorId: data.authorId || null,
+        authorKarma: data.authorKarma,
+      };
+    } catch {
+      return { karmaChange: 0, authorId: null };
+    }
   },
   removeVote: (commentId, userId) => set(state => ({ comments: state.comments.map(c => c.id!==commentId ? c : { ...c, votes: c.votes.filter(v => v.userId !== userId) }) })),
   getUserVote: (commentId, userId) => get().comments.find(c => c.id===commentId)?.votes.find(v => v.userId===userId)?.vote || null,

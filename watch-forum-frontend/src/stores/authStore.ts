@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User, BanRecord, UserRole, AdminBanActivity, AdminBanRateLimit, IPBanRecord, MultiAccountAlert, BadgeType, HallOfShameRecord } from '@/types';
 import { api, setToken, getToken } from '@/lib/api';
+import { useNotificationStore } from './notificationStore';
 
 type Result = { success: boolean; error?: string; message?: string; requires2FA?: boolean; pendingUserId?: string };
 
@@ -25,8 +26,9 @@ interface AuthState {
   isInitializing: boolean;
   initialize: () => Promise<void>;
   refreshUsers: () => Promise<void>;
+  refreshBanRecords: () => Promise<void>;
+  loadPublicUsers: () => Promise<void>;
   login: (email: string, password: string, ip?: string) => Promise<Result>;
-  // Completes a 2FA-required login by submitting the 6-digit code.
   verify2FALogin: (pendingUserId: string, token: string) => Promise<Result>;
   register: (username: string, email: string, password: string, country?: string, language?: string, ip?: string) => Promise<Result>;
   logout: () => void;
@@ -39,8 +41,6 @@ interface AuthState {
   changePassword: (oldPassword: string, newPassword: string) => Promise<Result>;
   updateSocialMedia: (socialMedia: { youtube?: string; x?: string; instagram?: string }) => Promise<Result>;
   updateProfileSettings: (settings: { showPhone?: boolean; showYouTube?: boolean; showX?: boolean; showInstagram?: boolean }) => Promise<Result>;
-  // Note: implementations are async, but we keep the sync `Result` signature here
-  // to stay compatible with existing call sites in AdminPanel.tsx.
   promoteToAdmin: (userId: string) => Result;
   demoteAdmin: (userId: string) => Result;
   getAdmins: () => User[];
@@ -64,8 +64,6 @@ interface AuthState {
   removeBadge: (userId: string, badgeId: string) => void;
   toggleBadgeVisibility: (userId: string, badgeType: BadgeType) => void;
   checkAndAwardAccountAgeBadges: (userId: string) => void;
-  // Note: 2FA implementations are async, but the interface stays sync-shaped
-  // for backwards compatibility with existing call sites in ProfilePage.tsx.
   enable2FA: () => Result & { secret?: string; qrCodeURL?: string };
   disable2FA: () => Result;
   verify2FA: (code: string) => Result;
@@ -85,7 +83,8 @@ interface AuthState {
   canModerate: () => boolean;
   viewUserMessages: (userId: string) => Result;
   checkUserIP: (userId: string) => { ip: string; sameIPUsers: User[] };
-  editUserProfile: (userId: string, updates: Partial<User>) => Result;
+  // Admin / owner edit ANY user's profile (motto, avatar, donor gif, social, etc.)
+  editUserProfile: (userId: string, updates: Partial<User>) => Promise<Result>;
   applyHallOfShame: (userId: string, reason: string, duration: '24h' | '7d') => Result;
   removeHallOfShame: (userId: string) => Result;
   getActiveHallOfShame: () => HallOfShameRecord[];
@@ -98,7 +97,6 @@ interface AuthState {
 
 const DONOR_BADGE_URLS: Record<number, string> = { 1000: '/donor-badge-1000.png', 2000: '/donor-badge-2k.png', 3000: '/donor-badge-3k.png', 4000: '/donor-badge-4k.png', 5000: '/donor-badge-5k.png', 10000: '/donor-badge-10k.png', 20000: '/donor-badge-20k.png', 25000: '/donor-badge-25k.png', 50000: '/donor-badge-50k.png', 100000: '/donor-badge-100k.png', 200000: '/donor-badge-200k.png', 400000: '/donor-badge-400k.png', 500000: '/donor-badge-500k.png', 1000000: '/donor-badge-1m.png' };
 
-// Cache the leaderboard fetch so we don't hammer the API.
 let leaderboardCache: { at: number; data: FlappyLeaderboardEntry[] } | null = null;
 const LEADERBOARD_TTL_MS = 5000;
 
@@ -138,11 +136,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (get().isInitializing) return;
     set({ isInitializing: true });
     try {
+      // Always load the public member list so non-logged-in visitors see members
+      get().loadPublicUsers().catch(() => {});
       if (getToken()) {
         const data = await api.get('/auth/me');
         set({ currentUser: data.user, isAuthenticated: true });
-        // refresh users only if logged in (admin endpoint requires auth anyway)
         await get().refreshUsers();
+        get().refreshBanRecords().catch(() => {});
+        // Kick off notification polling now that we know the user.
+        try { useNotificationStore.getState().init(data.user.id); } catch { /* ignore */ }
       }
     } catch {
       setToken(null);
@@ -156,19 +158,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const data = await api.get('/users');
       set({ users: data.users || [] });
     } catch {
-      // listing users requires admin role — ignore failures for normal users
+      // listing users requires admin role — fall back to the public list
+      get().loadPublicUsers().catch(() => {});
     }
+  },
+  refreshBanRecords: async () => {
+    try {
+      const data = await api.get('/users/ban-records');
+      set({ banRecords: data.records || [] });
+    } catch {
+      // requires admin/owner — silently ignore for normal users
+    }
+  },
+  loadPublicUsers: async () => {
+    try {
+      const data = await api.get('/users/public');
+      // Merge: don't overwrite a richer admin-loaded users[] when present
+      set((state) => {
+        if (state.users && state.users.length > 0) return state;
+        return { users: data.users || [] };
+      });
+    } catch { /* ignore */ }
   },
   login: async (email, password) => {
     try {
       const data = await api.post('/auth/login', { email, password });
       if (data.requires2FA) {
-        // Tell the LoginPage to show the 6-digit code input.
         return { success: false, requires2FA: true, pendingUserId: data.pendingUserId, message: 'requires2FA' };
       }
       setToken(data.token);
       set({ currentUser: data.user, isAuthenticated: true });
       get().refreshUsers().catch(() => {});
+      get().refreshBanRecords().catch(() => {});
+      try { useNotificationStore.getState().init(data.user.id); } catch { /* ignore */ }
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Login failed' };
@@ -180,6 +202,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setToken(data.token);
       set({ currentUser: data.user, isAuthenticated: true });
       get().refreshUsers().catch(() => {});
+      get().refreshBanRecords().catch(() => {});
+      try { useNotificationStore.getState().init(data.user.id); } catch { /* ignore */ }
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Invalid code' };
@@ -191,6 +215,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setToken(data.token);
       set({ currentUser: data.user, isAuthenticated: true });
       get().refreshUsers().catch(() => {});
+      try { useNotificationStore.getState().init(data.user.id); } catch { /* ignore */ }
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Registration failed' };
@@ -199,6 +224,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: () => {
     setToken(null);
     set({ currentUser: null, isAuthenticated: false });
+    try { useNotificationStore.getState().stop(); } catch { /* ignore */ }
+    // Reload the public member list so the Members page still works after logout
+    get().loadPublicUsers().catch(() => {});
   },
   updateProfile: async (updates) => {
     const data = await api.patch('/users/me/profile', updates);
@@ -216,7 +244,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateSocialMedia: async (socialMedia) => { try { await get().updateProfile({ socialMedia } as any); return { success: true }; } catch (e) { return { success: false, error: e instanceof Error ? e.message : 'Failed' }; } },
   updateProfileSettings: async (profileSettings) => {
     try {
-      // Merge with existing settings so we don't accidentally erase other toggles
       const merged = { ...(get().currentUser?.profileSettings || {}), ...profileSettings };
       await get().updateProfile({ profileSettings: merged } as any);
       return { success: true };
@@ -244,20 +271,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   banUser: async (userId: string, reason: string) => {
     try {
       await api.post(`/users/${userId}/ban`, { reason });
-      await get().refreshUsers();
+      await Promise.all([get().refreshUsers(), get().refreshBanRecords()]);
       return { success: true };
     } catch (e: any) { return { success: false, error: e.message }; }
   },
   unbanUser: async (userId: string) => {
     try {
       await api.del(`/users/${userId}/ban`);
-      await get().refreshUsers();
+      await Promise.all([get().refreshUsers(), get().refreshBanRecords()]);
       return { success: true };
     } catch (e: any) { return { success: false, error: e.message }; }
   },
   getBanRecords: () => get().banRecords,
   getBanRecordsByAdmin: (adminId) => get().banRecords.filter(r => r.bannedBy === adminId),
-  canBanMoreUsers: () => ({ allowed: false, remaining: 0, maxPerHour: 0 }),
+  canBanMoreUsers: () => ({ allowed: true, remaining: 100, maxPerHour: 100 }),
   banIP: () => ({ success: false, error: 'Not implemented yet' }),
   unbanIP: () => ({ success: false, error: 'Not implemented yet' }),
   getIPBanRecords: () => get().ipBanRecords,
@@ -306,9 +333,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateFlappyStats: async (_userId: string, score: number) => {
     try {
       await api.post('/users/me/flappy-stats', { score });
-      // bust the cache so next leaderboard fetch is fresh
       leaderboardCache = null;
-      // refresh current user (high score field) but skip refreshUsers (admin-only)
       try {
         const data = await api.get('/auth/me');
         set({ currentUser: data.user });
@@ -343,7 +368,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!user?.lastLoginIP) return { ip: '', sameIPUsers: [] };
     return { ip: user.lastLoginIP, sameIPUsers: get().users.filter(u => u.id !== userId && u.lastLoginIP === user.lastLoginIP) };
   },
-  editUserProfile: () => ({ success: false, error: 'Not implemented yet' }),
+  // ============================================
+  // ADMIN / OWNER edit any user's profile
+  // ============================================
+  editUserProfile: async (userId, updates) => {
+    try {
+      const data = await api.patch(`/users/${userId}`, updates);
+      const updated = data.user as User;
+      set(state => ({
+        users: state.users.map(u => u.id === updated.id ? updated : u),
+        currentUser: state.currentUser?.id === updated.id ? updated : state.currentUser,
+      }));
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to edit user' };
+    }
+  },
   applyHallOfShame: (async (userId: string, reason: string, duration: '24h' | '7d') => {
     try {
       await api.post(`/users/${userId}/hall-of-shame`, { reason, duration });

@@ -1,185 +1,177 @@
 // ============================================
-// NOTIFICATION STORE
-// Handles user notifications for thread replies and profile comments
+// NOTIFICATION STORE — server-backed
+// Notifications are persisted in MongoDB so the
+// thread author sees the bell update on ANY device.
+// Polls /api/notifications every 15s while the user
+// is on the site.
 // ============================================
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { Notification } from '@/types';
+import { api, getToken } from '@/lib/api';
 
 interface NotificationState {
   notifications: Notification[];
-  
+  initialized: boolean;
+  loading: boolean;
+
+  // Polling helpers
+  init: (userId: string) => void;
+  stop: () => void;
+  refresh: () => Promise<void>;
+
   // Actions
-  createNotification: (notification: Omit<Notification, 'id' | 'createdAt' | 'isRead'>) => Notification;
-  markAsRead: (notificationId: string) => void;
-  markAllAsRead: (userId: string) => void;
-  deleteNotification: (notificationId: string) => void;
+  markAsRead: (notificationId: string) => Promise<void>;
+  markAllAsRead: (userId: string) => Promise<void>;
+  deleteNotification: (notificationId: string) => Promise<void>;
   getUserNotifications: (userId: string) => Notification[];
   getUnreadCount: (userId: string) => number;
-  
-  // Mute thread actions
-  muteThread: (userId: string, threadId: string) => void;
-  unmuteThread: (userId: string, threadId: string) => void;
+
+  // Mute thread (persisted server-side on the user document)
+  muteThread: (userId: string, threadId: string) => Promise<void>;
+  unmuteThread: (userId: string, threadId: string) => Promise<void>;
   isThreadMuted: (userId: string, threadId: string) => boolean;
-  
-  // Notification creation helpers
-  notifyThreadReply: (threadId: string, threadTitle: string, threadAuthorId: string, replyAuthorName: string) => void;
-  notifyProfileComment: (profileUserId: string, commentAuthorName: string, commentId: string) => void;
+
+  // Legacy no-op helpers (notifications are now created on the backend)
+  notifyThreadReply: (
+    threadId: string,
+    threadTitle: string,
+    threadAuthorId: string,
+    replyAuthorName: string
+  ) => void;
+  notifyProfileComment: (
+    profileUserId: string,
+    commentAuthorName: string,
+    commentId: string
+  ) => void;
 }
 
-export const useNotificationStore = create<NotificationState>()(
-  persist(
-    (set, get) => ({
-      notifications: [],
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+const POLL_MS = 15000;
 
-      // ============================================
-      // CREATE NOTIFICATION
-      // ============================================
-      createNotification: (notification) => {
-        const newNotification: Notification = {
-          ...notification,
-          id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          createdAt: new Date().toISOString(),
-          isRead: false,
-        };
-        
-        set(state => ({
-          notifications: [newNotification, ...state.notifications],
-        }));
-        
-        return newNotification;
-      },
+export const useNotificationStore = create<NotificationState>((set, get) => ({
+  notifications: [],
+  initialized: false,
+  loading: false,
 
-      // ============================================
-      // MARK NOTIFICATION AS READ
-      // ============================================
-      markAsRead: (notificationId) => {
-        set(state => ({
-          notifications: state.notifications.map(n =>
-            n.id === notificationId ? { ...n, read: true } : n
-          ),
-        }));
-      },
+  init: (_userId) => {
+    if (get().initialized) return;
+    set({ initialized: true });
+    get().refresh().catch(() => {});
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+      if (!getToken()) return; // skip when logged out
+      get().refresh().catch(() => {});
+    }, POLL_MS);
+  },
 
-      // ============================================
-      // MARK ALL NOTIFICATIONS AS READ
-      // ============================================
-      markAllAsRead: (userId) => {
-        set(state => ({
-          notifications: state.notifications.map(n =>
-            n.userId === userId ? { ...n, read: true } : n
-          ),
-        }));
-      },
-
-      // ============================================
-      // DELETE NOTIFICATION
-      // ============================================
-      deleteNotification: (notificationId) => {
-        set(state => ({
-          notifications: state.notifications.filter(n => n.id !== notificationId),
-        }));
-      },
-
-      // ============================================
-      // GET USER NOTIFICATIONS
-      // ============================================
-      getUserNotifications: (userId) => {
-        return get().notifications
-          .filter(n => n.userId === userId)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      },
-
-      // ============================================
-      // GET UNREAD NOTIFICATION COUNT
-      // ============================================
-      getUnreadCount: (userId) => {
-        return get().notifications.filter(n => n.userId === userId && !n.isRead).length;
-      },
-
-      // ============================================
-      // MUTE THREAD - Stop notifications for this thread
-      // ============================================
-      muteThread: (userId, threadId) => {
-        // This is handled in authStore since mutedThreads is stored per user
-        const { users, setUsers } = useAuthStore.getState();
-        const updatedUsers = users.map(u => {
-          if (u.id !== userId) return u;
-          const alreadyMuted = u.mutedThreads?.some(mt => mt.threadId === threadId);
-          if (alreadyMuted) return u;
-          return {
-            ...u,
-            mutedThreads: [...(u.mutedThreads || []), { threadId, mutedAt: new Date().toISOString() }],
-          };
-        });
-        setUsers(updatedUsers);
-      },
-
-      // ============================================
-      // UNMUTE THREAD - Resume notifications for this thread
-      // ============================================
-      unmuteThread: (userId, threadId) => {
-        const { users, setUsers } = useAuthStore.getState();
-        const updatedUsers = users.map(u => {
-          if (u.id !== userId) return u;
-          return {
-            ...u,
-            mutedThreads: u.mutedThreads?.filter(mt => mt.threadId !== threadId) || [],
-          };
-        });
-        setUsers(updatedUsers);
-      },
-
-      // ============================================
-      // CHECK IF THREAD IS MUTED
-      // ============================================
-      isThreadMuted: (userId, threadId) => {
-        const { getUserById } = useAuthStore.getState();
-        const user = getUserById(userId);
-        return user?.mutedThreads?.some(mt => mt.threadId === threadId) || false;
-      },
-
-      // ============================================
-      // NOTIFY THREAD REPLY
-      // Creates notification when someone replies to your thread
-      // Does NOT notify if thread is muted
-      // Does NOT notify if you reply to your own thread
-      // ============================================
-      notifyThreadReply: (threadId, threadTitle, threadAuthorId, replyAuthorName) => {
-        // Don't notify if thread is muted
-        if (get().isThreadMuted(threadAuthorId, threadId)) return;
-        
-        get().createNotification({
-          userId: threadAuthorId,
-          type: 'thread_reply',
-          message: `${replyAuthorName} replied to your thread "${threadTitle}"`,
-          link: `/thread/${threadId}`,
-          threadId,
-          threadTitle,
-        });
-      },
-
-      // ============================================
-      // NOTIFY PROFILE COMMENT
-      // Creates notification when someone comments on your profile
-      // ============================================
-      notifyProfileComment: (profileUserId, commentAuthorName, commentId) => {
-        get().createNotification({
-          userId: profileUserId,
-          type: 'profile_comment',
-          message: `${commentAuthorName} commented on your profile`,
-          link: `/profile/${commentAuthorName}`,
-          commentId,
-          commentAuthorName,
-        });
-      },
-    }),
-    {
-      name: 'watch-forum-notifications',
+  stop: () => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
-  )
-);
+    set({ initialized: false, notifications: [] });
+  },
 
-// Import auth store for user operations
-import { useAuthStore } from './authStore';
+  refresh: async () => {
+    if (!getToken()) return;
+    if (get().loading) return;
+    set({ loading: true });
+    try {
+      const data = await api.get('/notifications');
+      set({ notifications: data.notifications || [] });
+    } catch {
+      // ignore — likely 401 (logged out)
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  markAsRead: async (notificationId) => {
+    set((state) => ({
+      notifications: state.notifications.map((n) =>
+        n.id === notificationId ? { ...n, isRead: true } : n
+      ),
+    }));
+    try {
+      await api.post(`/notifications/${notificationId}/read`);
+    } catch {
+      /* ignore */
+    }
+  },
+
+  markAllAsRead: async (userId) => {
+    set((state) => ({
+      notifications: state.notifications.map((n) =>
+        n.userId === userId ? { ...n, isRead: true } : n
+      ),
+    }));
+    try {
+      await api.post('/notifications/read-all');
+    } catch {
+      /* ignore */
+    }
+  },
+
+  deleteNotification: async (notificationId) => {
+    set((state) => ({
+      notifications: state.notifications.filter((n) => n.id !== notificationId),
+    }));
+    try {
+      await api.del(`/notifications/${notificationId}`);
+    } catch {
+      /* ignore */
+    }
+  },
+
+  getUserNotifications: (userId) => {
+    // Trigger init lazily if the bell renders before App did so.
+    if (!get().initialized && getToken()) {
+      get().init(userId);
+    }
+    return get()
+      .notifications.filter((n) => n.userId === userId)
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+  },
+
+  getUnreadCount: (userId) =>
+    get().notifications.filter((n) => n.userId === userId && !n.isRead).length,
+
+  // Mute / unmute — persists to backend so the server can skip notifying.
+  muteThread: async (_userId, threadId) => {
+    try {
+      await api.post(`/users/me/mute-thread/${threadId}`);
+    } catch {
+      /* ignore */
+    }
+  },
+
+  unmuteThread: async (_userId, threadId) => {
+    try {
+      await api.del(`/users/me/mute-thread/${threadId}`);
+    } catch {
+      /* ignore */
+    }
+  },
+
+  isThreadMuted: (userId, threadId) => {
+    // Look up muted threads on the current user record (kept in authStore).
+    try {
+      // Lazy import to avoid a circular dependency at module load.
+      const { useAuthStore } =
+        require('./authStore') as typeof import('./authStore');
+      const u = useAuthStore.getState().getUserById(userId);
+      return !!u?.mutedThreads?.some((m: any) => m && m.threadId === threadId);
+    } catch {
+      return false;
+    }
+  },
+
+  // Legacy helpers — kept so existing call sites (e.g. ThreadPage) compile.
+  // They are no-ops because the server now creates the notification.
+  notifyThreadReply: () => undefined,
+  notifyProfileComment: () => undefined,
+}));

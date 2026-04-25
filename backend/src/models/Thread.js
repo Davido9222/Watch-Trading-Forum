@@ -20,13 +20,5 @@ const threadSchema = new mongoose.Schema({
   lastCommentBy: { type: String, default: '' }
 }, { timestamps: true });
 
-// Compound index that matches the listThreads sort order.
-// Without this, Mongo loads every thread into RAM to sort and trips the
-// 32 MB in-memory sort limit ("QueryExceededMemoryLimitNoDiskUseAllowed").
-// With it, the sort is served straight from the index — O(log n), no RAM blowup.
-threadSchema.index({ isPinned: -1, createdAt: -1 });
-
-// Useful for the per-section views and "newest in section" queries.
-threadSchema.index({ sectionId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Thread', threadSchema);

@@ -1,16 +1,14 @@
 // ============================================
 // THREAD PAGE
-// Notifications are now created on the BACKEND
-// when a comment is posted, so they show up on
-// any device the thread author signs in on.
-// We also surface server rate-limit errors
-// (1 thread + 1 comment per minute).
+// Displays full thread with all comments
+// Includes: View counter, comment form, image uploads
 // ============================================
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useForumStore } from '@/stores/forumStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useNotificationStore } from '@/stores/notificationStore';
 import { CommentCard } from '@/components/forum/CommentCard';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -24,9 +22,9 @@ import type { UploadResult } from '@/utils/imageUpload';
 export const ThreadPage: React.FC = () => {
   const { threadId } = useParams<{ threadId: string }>();
   const navigate = useNavigate();
-  const {
-    getThreadById,
-    getCommentsByThread,
+  const { 
+    getThreadById, 
+    getCommentsByThread, 
     createComment,
     loadThread,
     incrementViewCount,
@@ -35,97 +33,126 @@ export const ThreadPage: React.FC = () => {
     lockThread,
     unlockThread,
     deleteThread,
-    getSectionById,
+    deleteComment,
+    getSectionById
   } = useForumStore();
   const { isAuthenticated, currentUser, canModerate, isOwner } = useAuthStore();
 
   const [commentText, setCommentText] = useState('');
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [posting, setPosting] = useState(false);
-  const [postError, setPostError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const thread = threadId ? getThreadById(threadId) : undefined;
   const comments = threadId ? getCommentsByThread(threadId) : [];
   const section = thread ? getSectionById(thread.sectionId) : undefined;
 
+  // Increment view count on mount
   useEffect(() => {
     if (threadId) {
       incrementViewCount(threadId);
       loadThread(threadId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
+  // Handle image upload
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
     setIsUploading(true);
+    
     for (let i = 0; i < files.length; i++) {
       const result: UploadResult = await uploadImage(files[i]);
       if (result.success && result.url) {
-        setUploadedImages((prev) => [...prev, result.url!]);
+        setUploadedImages(prev => [...prev, result.url!]);
       } else {
         alert(result.error || 'Failed to upload image');
       }
     }
+    
     setIsUploading(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const removeImage = (index: number) => {
-    setUploadedImages((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handlePostComment = async () => {
-    if (!isAuthenticated || !currentUser || !thread || posting) return;
-    if (!commentText.trim() && uploadedImages.length === 0) return;
-
-    setPosting(true);
-    setPostError(null);
-    try {
-      await createComment({
-        threadId: thread.id,
-        content: commentText,
-        authorId: currentUser.id,
-        authorName: currentUser.username,
-        authorAvatar: currentUser.avatar,
-        authorRole: currentUser.role,
-        authorMotto: currentUser.motto,
-        authorDonorGif: currentUser.donorGif,
-        authorBadges: currentUser.badges || [],
-        authorHallOfShame: currentUser.hallOfShame,
-        images: uploadedImages,
-      });
-      // The server now creates the notification for the thread author
-      // (and respects mutedThreads), so nothing extra to do here.
-      setCommentText('');
-      setUploadedImages([]);
-    } catch (err: any) {
-      setPostError(err?.message || 'Failed to post comment');
-    } finally {
-      setPosting(false);
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
-  const handleDeleteComment = (_commentId: string) => {
-    alert('Delete comment functionality would be implemented here');
+  // Remove uploaded image
+  const removeImage = (index: number) => {
+    setUploadedImages(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Handle post comment
+  const handlePostComment = async () => {
+    if (!isAuthenticated || !currentUser || !thread) return;
+    if (!commentText.trim() && uploadedImages.length === 0) return;
+
+    await createComment({
+      threadId: thread.id,
+      content: commentText,
+      authorId: currentUser.id,
+      authorName: currentUser.username,
+      authorAvatar: currentUser.avatar,
+      authorRole: currentUser.role,
+      authorMotto: currentUser.motto,
+      authorDonorGif: currentUser.donorGif,
+      authorBadges: currentUser.badges || [],
+      authorHallOfShame: currentUser.hallOfShame,
+      images: uploadedImages,
+    });
+
+    // Create notification for thread author (if not replying to own thread)
+    if (thread.authorId !== currentUser.id) {
+      const { notifyThreadReply, isThreadMuted } = useNotificationStore.getState();
+      
+      // Check if thread is muted by the author
+      if (!isThreadMuted(thread.authorId, thread.id)) {
+        notifyThreadReply(
+          thread.id,
+          thread.title,
+          thread.authorId,
+          currentUser.username
+        );
+      }
+    }
+
+    setCommentText('');
+    setUploadedImages([]);
+  };
+
+  // Handle delete comment (admin, owner, or comment author)
+  const handleDeleteComment = async (commentId: string) => {
+    if (!window.confirm('Delete this comment? This cannot be undone.')) return;
+    try {
+      await deleteComment(commentId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete comment');
+    }
+  };
+
+  // Handle pin/unpin thread (Owner only)
   const handlePinThread = async () => {
     if (!thread || !isOwner()) return;
-    if (thread.isPinned) await unpinThread(thread.id);
-    else await pinThread(thread.id);
+    if (thread.isPinned) {
+      await unpinThread(thread.id);
+    } else {
+      await pinThread(thread.id);
+    }
   };
 
+  // Handle lock/unlock thread (Admin/Owner)
   const handleLockThread = async () => {
     if (!thread || !canModerate()) return;
-    if (thread.isLocked) await unlockThread(thread.id);
-    else await lockThread(thread.id);
+    if (thread.isLocked) {
+      await unlockThread(thread.id);
+    } else {
+      await lockThread(thread.id);
+    }
   };
 
+  // Handle delete thread (Admin/Owner or author)
   const handleDeleteThread = async () => {
     if (!thread) return;
     if (canModerate() || currentUser?.id === thread.authorId) {
@@ -134,14 +161,16 @@ export const ThreadPage: React.FC = () => {
     }
   };
 
-  const formatDate = (dateString: string) =>
-    new Date(dateString).toLocaleDateString('en-US', {
+  // Format date
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
 
   if (!thread) {
     return (
@@ -165,8 +194,12 @@ export const ThreadPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* ============================================
+          THREAD HEADER
+          ============================================ */}
       <div className="bg-white border-b border-gray-200 py-6">
         <div className="container mx-auto px-4">
+          {/* Breadcrumb */}
           <div className="flex items-center gap-2 text-sm text-gray-500 mb-4">
             <Link to="/" className="hover:text-blue-600">Home</Link>
             <span>/</span>
@@ -181,6 +214,7 @@ export const ThreadPage: React.FC = () => {
             <span className="text-gray-900 truncate max-w-[300px]">{thread.title}</span>
           </div>
 
+          {/* Title & Badges */}
           <div className="flex items-start gap-3 flex-wrap mb-4">
             {thread.isPinned && (
               <Badge className="bg-blue-600 text-white">
@@ -196,8 +230,11 @@ export const ThreadPage: React.FC = () => {
             )}
           </div>
 
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 mb-4">{thread.title}</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 mb-4">
+            {thread.title}
+          </h1>
 
+          {/* Author Info */}
           <div className="flex items-center gap-4 flex-wrap">
             <Link to={`/profile/${thread.authorName}`} className="flex items-center gap-3">
               <Avatar className="h-10 w-10">
@@ -210,6 +247,7 @@ export const ThreadPage: React.FC = () => {
               </div>
             </Link>
 
+            {/* Stats */}
             <div className="flex items-center gap-4 ml-auto text-sm text-gray-500">
               <div className="flex items-center gap-1">
                 <Eye className="h-4 w-4" />
@@ -222,21 +260,50 @@ export const ThreadPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Moderation Actions */}
           {canModerateThread && (
             <div className="mt-4 pt-4 border-t border-gray-100 flex gap-2">
+              {/* Pin/Unpin (Owner only) */}
               {isOwner() && (
-                <Button variant="outline" size="sm" onClick={handlePinThread}>
-                  <Pin className="h-4 w-4 mr-1" />
-                  {thread.isPinned ? 'Unpin' : 'Pin'}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePinThread}
+                >
+                  {thread.isPinned ? (
+                    <>
+                      <Pin className="h-4 w-4 mr-1" />
+                      Unpin
+                    </>
+                  ) : (
+                    <>
+                      <Pin className="h-4 w-4 mr-1" />
+                      Pin
+                    </>
+                  )}
                 </Button>
               )}
-              <Button variant="outline" size="sm" onClick={handleLockThread}>
+
+              {/* Lock/Unlock */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleLockThread}
+              >
                 {thread.isLocked ? (
-                  <><Unlock className="h-4 w-4 mr-1" />Unlock</>
+                  <>
+                    <Unlock className="h-4 w-4 mr-1" />
+                    Unlock
+                  </>
                 ) : (
-                  <><Lock className="h-4 w-4 mr-1" />Lock</>
+                  <>
+                    <Lock className="h-4 w-4 mr-1" />
+                    Lock
+                  </>
                 )}
               </Button>
+
+              {/* Delete */}
               <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="destructive" size="sm">
@@ -253,7 +320,9 @@ export const ThreadPage: React.FC = () => {
                   </DialogHeader>
                   <DialogFooter>
                     <Button variant="outline">Cancel</Button>
-                    <Button variant="destructive" onClick={handleDeleteThread}>Delete Thread</Button>
+                    <Button variant="destructive" onClick={handleDeleteThread}>
+                      Delete Thread
+                    </Button>
                   </DialogFooter>
                 </DialogContent>
               </Dialog>
@@ -263,10 +332,15 @@ export const ThreadPage: React.FC = () => {
       </div>
 
       <div className="container mx-auto px-4 py-6">
+        {/* ============================================
+            ORIGINAL POST
+            ============================================ */}
         <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
           <div className="prose max-w-none">
             <p className="text-gray-800 whitespace-pre-wrap">{thread.content}</p>
           </div>
+
+          {/* Thread Images */}
           {thread.images && thread.images.length > 0 && (
             <div className="mt-4 flex flex-wrap gap-3">
               {thread.images.map((image, index) => (
@@ -281,10 +355,14 @@ export const ThreadPage: React.FC = () => {
           )}
         </div>
 
+        {/* ============================================
+            COMMENTS SECTION
+            ============================================ */}
         <div className="mb-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">
             Comments ({thread.commentCount})
           </h2>
+
           {comments.length === 0 ? (
             <p className="text-gray-500 text-center py-8">No comments yet. Be the first to reply!</p>
           ) : (
@@ -302,9 +380,13 @@ export const ThreadPage: React.FC = () => {
           )}
         </div>
 
+        {/* ============================================
+            COMMENT FORM
+            ============================================ */}
         {canComment ? (
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Post a Reply</h3>
+            
             <Textarea
               placeholder="Write your comment..."
               value={commentText}
@@ -312,6 +394,7 @@ export const ThreadPage: React.FC = () => {
               className="min-h-[120px] mb-4"
             />
 
+            {/* Image Upload Preview */}
             {uploadedImages.length > 0 && (
               <div className="mb-4">
                 <p className="text-sm text-gray-600 mb-2">Attached images:</p>
@@ -335,11 +418,8 @@ export const ThreadPage: React.FC = () => {
               </div>
             )}
 
-            {postError && (
-              <p className="text-sm text-red-600 mb-3">{postError}</p>
-            )}
-
             <div className="flex items-center gap-3">
+              {/* Image Upload Button */}
               <input
                 type="file"
                 ref={fileInputRef}
@@ -360,15 +440,15 @@ export const ThreadPage: React.FC = () => {
 
               <Button
                 onClick={handlePostComment}
-                disabled={(!commentText.trim() && uploadedImages.length === 0) || posting}
+                disabled={(!commentText.trim() && uploadedImages.length === 0)}
               >
                 <MessageSquare className="h-4 w-4 mr-2" />
-                {posting ? 'Posting...' : 'Post Comment'}
+                Post Comment
               </Button>
             </div>
 
             <p className="text-xs text-gray-500 mt-3">
-              Only image files (.jpg, .png, .gif, .webp) are allowed. Max file size: 5MB. You can post 1 comment per minute.
+              Only image files (.jpg, .png, .gif, .webp) are allowed. Max file size: 5MB.
             </p>
           </div>
         ) : thread.isLocked ? (

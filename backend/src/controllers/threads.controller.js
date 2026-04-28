@@ -1,9 +1,11 @@
-import { Request, Response } from "express";
-import Thread from "../models/Thread";
-import Comment from "../models/Comment";
-import User from "../models/User";
+const Thread = require('../models/Thread');
+const Comment = require('../models/Comment');
+const User = require('../models/User');
+const Notification = require('../models/Notification');
 
-function mapThread(thread: any) {
+const RATE_LIMIT_MS = 60 * 1000; // 1 thread + 1 comment per minute per user
+
+function mapThread(thread) {
   const obj = thread.toObject ? thread.toObject() : thread;
   return {
     id: obj._id?.toString?.() || obj.id,
@@ -29,7 +31,7 @@ function mapThread(thread: any) {
   };
 }
 
-function mapComment(comment: any) {
+function mapComment(comment) {
   const obj = comment.toObject ? comment.toObject() : comment;
   return {
     id: obj._id?.toString?.() || obj.id,
@@ -52,110 +54,270 @@ function mapComment(comment: any) {
   };
 }
 
-export const listThreads = async (_req: Request, res: Response) => {
-  const threads = await Thread.find().sort({ isPinned: -1, createdAt: -1 });
+// ---------------------------------------------------------------------------
+// listThreads
+// ---------------------------------------------------------------------------
+// Two important changes vs. the original:
+//   1. .allowDiskUse(true) lets MongoDB spill the sort to disk if it ever
+//      exceeds the 32 MB in-memory sort limit again. This is a belt-and-
+//      braces fix on top of the new compound index.
+//   2. Excluded the heavy `images` field from the list response. The forum
+//      list view doesn't render the inline images anyway — they're only
+//      needed on the thread detail page, which is fetched by getThread.
+//      This keeps each thread document small in the wire response and in
+//      the in-memory result set.
+// The frontend keeps working: mapThread always returns images: [] when
+// the field is absent, so any UI code that reads thread.images sees an
+// empty array on the list page (just as if the thread had no images).
+// ---------------------------------------------------------------------------
+exports.listThreads = async (_req, res) => {
+  const threads = await Thread.find({}, { images: 0 })
+    .sort({ isPinned: -1, createdAt: -1 })
+    .allowDiskUse(true);
   res.json({ threads: threads.map(mapThread) });
 };
 
-export const getThread = async (req: Request, res: Response) => {
+exports.getThread = async (req, res) => {
   const thread = await Thread.findById(req.params.id);
-  if (!thread) return res.status(404).json({ message: "Thread not found" }) as any;
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
   const comments = await Comment.find({ threadId: thread._id }).sort({ createdAt: 1 });
   res.json({ thread: mapThread(thread), comments: comments.map(mapComment) });
 };
 
-export const createThread = async (req: Request, res: Response) => {
-  const user = await User.findById((req as any).user.id);
-  if (!user) return res.status(404).json({ message: "User not found" }) as any;
+exports.createThread = async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (user.isBanned) return res.status(403).json({ message: 'You are banned' });
+
+  // Rate-limit: 1 thread per minute per user (admin/owner exempt)
+  if (user.role === 'user' && user.lastThreadAt) {
+    const diff = Date.now() - new Date(user.lastThreadAt).getTime();
+    if (diff < RATE_LIMIT_MS) {
+      const wait = Math.ceil((RATE_LIMIT_MS - diff) / 1000);
+      return res.status(429).json({ message: `You can only create 1 thread per minute. Please wait ${wait}s.` });
+    }
+  }
+
   const { title, content, sectionId, sectionName, images = [] } = req.body;
-  if (!title || !sectionId || !sectionName) return res.status(400).json({ message: "Missing required fields" }) as any;
+  if (!title || !sectionId || !sectionName) return res.status(400).json({ message: 'Missing required fields' });
+
+  // Defensive: refuse to store base64 image blobs inside the document.
+  // All images must be hosted (Cloudinary returns proper https URLs).
+  // Without this guard, even one buggy client could refill the database.
+  const safeImages = Array.isArray(images)
+    ? images.filter((u) => typeof u === 'string' && !u.startsWith('data:'))
+    : [];
+
   const thread = await Thread.create({
     title,
-    content: content || "",
+    content: content || '',
     authorId: user._id,
     authorName: user.username,
     authorAvatar: user.avatar,
     authorRole: user.role,
     authorMotto: user.motto,
-    authorDonorGif: (user as any).donorGif || "",
+    authorDonorGif: user.donorGif || '',
     sectionId,
     sectionName,
-    images,
+    images: safeImages,
   });
-  (user as any).postCount += 1;
+  user.postCount += 1;
+  user.lastThreadAt = new Date();
   await user.save();
   res.status(201).json({ thread: mapThread(thread) });
 };
 
-export const incrementViewCount = async (req: Request, res: Response) => {
+exports.incrementViewCount = async (req, res) => {
   const thread = await Thread.findByIdAndUpdate(req.params.id, { $inc: { viewCount: 1 } }, { new: true });
-  if (!thread) return res.status(404).json({ message: "Thread not found" }) as any;
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
   res.json({ thread: mapThread(thread) });
 };
 
-export const updateThreadFlags = async (req: Request, res: Response) => {
+exports.updateThreadFlags = async (req, res) => {
   const thread = await Thread.findById(req.params.id);
-  if (!thread) return res.status(404).json({ message: "Thread not found" }) as any;
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
   if (req.body.isPinned !== undefined) thread.isPinned = !!req.body.isPinned;
   if (req.body.isLocked !== undefined) thread.isLocked = !!req.body.isLocked;
   await thread.save();
   res.json({ thread: mapThread(thread) });
 };
 
-export const deleteThread = async (req: Request, res: Response) => {
+exports.deleteThread = async (req, res) => {
   const thread = await Thread.findById(req.params.id);
-  if (!thread) return res.status(404).json({ message: "Thread not found" }) as any;
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
   await Comment.deleteMany({ threadId: thread._id });
   await thread.deleteOne();
   res.json({ success: true });
 };
 
-export const deleteComment = async (req: Request, res: Response) => {
-  const user = await User.findById((req as any).user.id);
-  if (!user) return res.status(404).json({ message: "User not found" }) as any;
-  const comment = await Comment.findById(req.params.commentId);
-  if (!comment) return res.status(404).json({ message: "Comment not found" }) as any;
-  const isAuthor = comment.authorId?.toString() === (user._id as any).toString();
-  const isModerator = user.role === "owner" || user.role === "admin";
-  if (!isAuthor && !isModerator) return res.status(403).json({ message: "Forbidden: only the author, an admin, or the owner can delete this comment" }) as any;
-  const thread = await Thread.findById(comment.threadId);
-  await comment.deleteOne();
-  if (thread) {
-    (thread as any).commentCount = Math.max(0, ((thread as any).commentCount || 1) - 1);
-    await thread.save();
+exports.deleteComment = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    const comment = await Comment.findById(req.params.commentId);
+    if (!comment) return res.status(404).json({ message: 'Comment not found' });
+    const isAuthor = comment.authorId && comment.authorId.toString() === user._id.toString();
+    const isModerator = user.role === 'owner' || user.role === 'admin';
+    if (!isAuthor && !isModerator) {
+      return res.status(403).json({ message: 'Forbidden: only the author, an admin, or the owner can delete this comment' });
+    }
+    const thread = await Thread.findById(comment.threadId);
+    const authorId = comment.authorId;
+    await comment.deleteOne();
+    if (thread) {
+      thread.commentCount = Math.max(0, (thread.commentCount || 1) - 1);
+      await thread.save();
+    }
+    if (authorId) {
+      const author = await User.findById(authorId);
+      if (author) {
+        author.commentCount = Math.max(0, (author.commentCount || 1) - 1);
+        await author.save();
+      }
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-  const author = await User.findById(comment.authorId);
-  if (author) {
-    (author as any).commentCount = Math.max(0, ((author as any).commentCount || 1) - 1);
-    await author.save();
-  }
-  res.json({ success: true });
 };
 
-export const createComment = async (req: Request, res: Response) => {
-  const user = await User.findById((req as any).user.id);
+exports.createComment = async (req, res) => {
+  const user = await User.findById(req.user.id);
   const thread = await Thread.findById(req.params.id);
-  if (!user || !thread) return res.status(404).json({ message: "Thread or user not found" }) as any;
+  if (!user || !thread) return res.status(404).json({ message: 'Thread or user not found' });
+  if (user.isBanned) return res.status(403).json({ message: 'You are banned' });
+  if (thread.isLocked) return res.status(403).json({ message: 'Thread is locked' });
+
+  // Rate-limit: 1 comment per minute per user (admin/owner exempt)
+  if (user.role === 'user' && user.lastCommentAt) {
+    const diff = Date.now() - new Date(user.lastCommentAt).getTime();
+    if (diff < RATE_LIMIT_MS) {
+      const wait = Math.ceil((RATE_LIMIT_MS - diff) / 1000);
+      return res.status(429).json({ message: `You can only post 1 comment per minute. Please wait ${wait}s.` });
+    }
+  }
+
   const { content, images = [] } = req.body;
-  if (!content && images.length === 0) return res.status(400).json({ message: "Comment cannot be empty" }) as any;
+  if (!content && images.length === 0) return res.status(400).json({ message: 'Comment cannot be empty' });
+
+  // Defensive: same base64 guard as createThread.
+  const safeImages = Array.isArray(images)
+    ? images.filter((u) => typeof u === 'string' && !u.startsWith('data:'))
+    : [];
+
   const comment = await Comment.create({
     threadId: thread._id,
-    content: content || "",
+    content: content || '',
     authorId: user._id,
     authorName: user.username,
     authorAvatar: user.avatar,
     authorRole: user.role,
     authorMotto: user.motto,
-    authorDonorGif: (user as any).donorGif || "",
-    authorBadges: (user as any).badges || [],
-    authorHallOfShame: (user as any).hallOfShame || undefined,
-    images,
+    authorDonorGif: user.donorGif || '',
+    authorBadges: user.badges || [],
+    authorHallOfShame: user.hallOfShame || undefined,
+    images: safeImages,
   });
-  (thread as any).commentCount += 1;
-  (thread as any).lastCommentAt = new Date();
-  (thread as any).lastCommentBy = user.username;
+  thread.commentCount += 1;
+  thread.lastCommentAt = new Date();
+  thread.lastCommentBy = user.username;
   await thread.save();
-  (user as any).commentCount += 1;
+  user.commentCount += 1;
+  user.lastCommentAt = new Date();
   await user.save();
+
+  // Notify thread author (server-side, persisted) — skip self-replies & muted threads
+  try {
+    const threadAuthorId = thread.authorId?.toString?.() || thread.authorId;
+    if (threadAuthorId && threadAuthorId !== user._id.toString()) {
+      const author = await User.findById(threadAuthorId).select('mutedThreads');
+      const isMuted = (author?.mutedThreads || []).some(m => m && m.threadId === thread._id.toString());
+      if (!isMuted) {
+        await Notification.create({
+          userId: threadAuthorId,
+          type: 'thread_reply',
+          message: `${user.username} replied to your thread "${thread.title}"`,
+          link: `/thread/${thread._id.toString()}`,
+          threadId: thread._id.toString(),
+          threadTitle: thread.title,
+          commentId: comment._id.toString(),
+          commentAuthorName: user.username,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('notification create failed', e);
+  }
+
   res.status(201).json({ comment: mapComment(comment) });
 };
+
+// ============================================
+// VOTE ON COMMENT — also updates author's karma
+// ============================================
+exports.voteComment = async (req, res) => {
+  try {
+    const { vote } = req.body;
+    if (!['up', 'down'].includes(vote)) return res.status(400).json({ message: 'Invalid vote' });
+
+    const comment = await Comment.findById(req.params.commentId);
+    if (!comment) return res.status(404).json({ message: 'Comment not found' });
+
+    const userId = req.user.id;
+    if (comment.authorId.toString() === userId) {
+      return res.status(400).json({ message: 'You cannot vote on your own comment' });
+    }
+
+    const votes = Array.isArray(comment.votes) ? [...comment.votes] : [];
+    const existing = votes.find(v => v.userId === userId);
+    let karmaChange = 0;
+    let upvotes = comment.upvotes || 0;
+    let downvotes = comment.downvotes || 0;
+
+    if (existing && existing.vote === vote) {
+      // Toggle off
+      const idx = votes.findIndex(v => v.userId === userId);
+      votes.splice(idx, 1);
+      if (vote === 'up') { upvotes -= 1; karmaChange = -1; }
+      else { downvotes -= 1; karmaChange = 1; }
+    } else if (existing) {
+      // Switch direction
+      existing.vote = vote;
+      existing.votedAt = new Date().toISOString();
+      if (vote === 'up') { upvotes += 1; downvotes -= 1; karmaChange = 2; }
+      else { upvotes -= 1; downvotes += 1; karmaChange = -2; }
+    } else {
+      votes.push({ userId, vote, votedAt: new Date().toISOString() });
+      if (vote === 'up') { upvotes += 1; karmaChange = 1; }
+      else { downvotes += 1; karmaChange = -1; }
+    }
+
+    comment.votes = votes;
+    comment.upvotes = Math.max(0, upvotes);
+    comment.downvotes = Math.max(0, downvotes);
+    await comment.save();
+
+    // Update author karma
+    let authorKarma = 0;
+    if (karmaChange !== 0) {
+      const author = await User.findById(comment.authorId);
+      if (author) {
+        author.karma = (author.karma || 0) + karmaChange;
+        await author.save();
+        authorKarma = author.karma;
+      }
+    }
+
+    res.json({
+      comment: mapComment(comment),
+      karmaChange,
+      authorId: comment.authorId.toString(),
+      authorKarma,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.mapThread = mapThread;
+exports.mapComment = mapComment;

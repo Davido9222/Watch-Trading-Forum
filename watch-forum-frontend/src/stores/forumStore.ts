@@ -35,42 +35,23 @@ interface ForumState {
   createComment: (comment: Omit<Comment, 'id' | 'createdAt' | 'updatedAt' | 'votes' | 'upvotes' | 'downvotes'>) => Promise<Comment>;
   getCommentsByThread: (threadId: string) => Comment[];
   getCommentsByUser: (userId: string) => Comment[];
-  deleteComment: (commentId: string) => void;
-  voteComment: (commentId: string, userId: string, vote: 'up' | 'down') => Promise<{ karmaChange: number; authorId: string | null; authorKarma?: number }>;
+  deleteComment: (commentId: string) => Promise<void>;
+  voteComment: (commentId: string, userId: string, vote: 'up' | 'down') => { karmaChange: number; authorId: string | null };
   removeVote: (commentId: string, userId: string) => void;
   getUserVote: (commentId: string, userId: string) => 'up' | 'down' | null;
   getUserActivity: (userId: string) => { threads: Thread[]; comments: Comment[] };
 }
 
-// ---------------------------------------------------------------------------
-// HOT SCORE — Reddit-style time-decayed engagement so "Hot" is meaningfully
-// different from "Newest". Threads bubble up when they have lots of recent
-// comments / views, and slowly decay over time.
-// ---------------------------------------------------------------------------
-function hotScore(t: Thread): number {
-  const ageHours = Math.max(1, (Date.now() - new Date(t.createdAt).getTime()) / 3600000);
-  const engagement = (t.commentCount || 0) * 10 + (t.viewCount || 0) * 1;
-  return (engagement + 1) / Math.pow(ageHours + 2, 1.4);
-}
-
 function applyFilterSort(threads: Thread[], sort: SortOption = 'newest', timeFilter: TimeFilter = 'all') {
   let filtered = [...threads];
-
   if (timeFilter !== 'all') {
     const now = Date.now();
     const filterMs = { '3months': 90*24*60*60*1000, month: 30*24*60*60*1000, week: 7*24*60*60*1000 }[timeFilter] || 0;
     filtered = filtered.filter(t => now - new Date(t.createdAt).getTime() <= filterMs);
   }
-
-  if (sort === 'newest') {
-    filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  } else if (sort === 'hot') {
-    filtered.sort((a, b) => hotScore(b) - hotScore(a));
-  }
-
-  // Pinned always on top — V8's sort is stable, so the previous sort order
-  // is preserved within the pinned and unpinned groups.
-  filtered.sort((a, b) => Number(b.isPinned) - Number(a.isPinned));
+  if (sort === 'newest') filtered.sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  else if (sort === 'hot') filtered.sort((a,b) => (b.viewCount + b.commentCount*10) - (a.viewCount + a.commentCount*10));
+  filtered.sort((a,b) => Number(b.isPinned) - Number(a.isPinned));
   return filtered;
 }
 
@@ -113,23 +94,15 @@ export const useForumStore = create<ForumState>((set, get) => ({
     }
     return ids;
   },
-  // -----------------------------------------------------------------------
-  // Counts are always computed live from the threads array. Works for leaf
-  // sections (descendants = []) AND parents (descendants included).
-  // -----------------------------------------------------------------------
   getAggregatedThreadCount: (sectionId) => {
     const all = [sectionId, ...get().getAllDescendantSectionIds(sectionId)];
     return get().threads.filter(t => all.includes(t.sectionId)).length;
   },
-  // Posts = threads + replies. Uses thread.commentCount (kept up-to-date by
-  // the backend on every comment create) instead of the in-memory comments
-  // array — comments are only loaded on the thread detail page, so on the
-  // home / section pages the previous version always returned `threads + 0`.
   getAggregatedPostCount: (sectionId) => {
     const all = [sectionId, ...get().getAllDescendantSectionIds(sectionId)];
     const sectionThreads = get().threads.filter(t => all.includes(t.sectionId));
-    const totalComments = sectionThreads.reduce((sum, t) => sum + (t.commentCount || 0), 0);
-    return sectionThreads.length + totalComments;
+    const threadIds = sectionThreads.map(t => t.id);
+    return sectionThreads.length + get().comments.filter(c => threadIds.includes(c.threadId)).length;
   },
   getThreadsBySectionWithDescendants: (sectionId, sort='newest', timeFilter='all') => {
     const all = [sectionId, ...get().getAllDescendantSectionIds(sectionId)];
@@ -146,7 +119,7 @@ export const useForumStore = create<ForumState>((set, get) => ({
   canCreateThread: (userId) => {
     const last = get().lastThreadTimes[userId];
     if (!last) return { allowed: true };
-    const rem = 60 * 1000 - (Date.now() - new Date(last).getTime());
+    const rem = 30*60*1000 - (Date.now() - new Date(last).getTime());
     return rem <= 0 ? { allowed: true } : { allowed: false, timeRemaining: rem };
   },
   getLastThreadTime: (userId) => get().lastThreadTimes[userId] || null,
@@ -171,16 +144,23 @@ export const useForumStore = create<ForumState>((set, get) => ({
   },
   getCommentsByThread: (threadId) => get().comments.filter(c => c.threadId === threadId).sort((a,b)=>new Date(a.createdAt).getTime()-new Date(b.createdAt).getTime()),
   getCommentsByUser: (userId) => get().comments.filter(c => c.authorId === userId).sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime()),
-  deleteComment: (commentId) => set(state => ({ comments: state.comments.filter(c => c.id !== commentId) })),
-  voteComment: async (commentId, _userId, vote) => {
-    try {
-      const data = await api.post(`/threads/comments/${commentId}/vote`, { vote });
-      const updated = data.comment as Comment;
-      set(state => ({ comments: state.comments.map(c => c.id === updated.id ? updated : c) }));
-      return { karmaChange: data.karmaChange || 0, authorId: data.authorId || null, authorKarma: data.authorKarma };
-    } catch {
-      return { karmaChange: 0, authorId: null };
-    }
+  deleteComment: async (commentId) => {
+    const target = get().comments.find(c => c.id === commentId);
+    await api.del(`/threads/comments/${commentId}`);
+    set(state => ({
+      comments: state.comments.filter(c => c.id !== commentId),
+      threads: target ? state.threads.map(t => t.id === target.threadId ? { ...t, commentCount: Math.max(0, t.commentCount - 1) } : t) : state.threads,
+    }));
+  },
+  voteComment: (commentId, userId, vote) => {
+    const comment = get().comments.find(c => c.id === commentId); if (!comment) return { karmaChange: 0, authorId: null };
+    const existing = comment.votes.find(v => v.userId === userId);
+    let votes = [...comment.votes]; let up = comment.upvotes; let down = comment.downvotes; let karma = 0;
+    if (existing?.vote === vote) { votes = votes.filter(v => v.userId !== userId); if (vote==='up'){up-=1;karma=-1}else{down-=1;karma=1} }
+    else if (existing) { votes = votes.map(v => v.userId===userId ? { ...v, vote, votedAt: new Date().toISOString() } : v); if (vote==='up'){up+=1;down-=1;karma=2}else{up-=1;down+=1;karma=-2} }
+    else { votes.push({ userId, vote, votedAt: new Date().toISOString() }); if (vote==='up'){up+=1;karma=1}else{down+=1;karma=-1} }
+    set(state => ({ comments: state.comments.map(c => c.id===commentId ? { ...c, votes, upvotes: Math.max(0,up), downvotes: Math.max(0,down) } : c) }));
+    return { karmaChange: karma, authorId: comment.authorId };
   },
   removeVote: (commentId, userId) => set(state => ({ comments: state.comments.map(c => c.id!==commentId ? c : { ...c, votes: c.votes.filter(v => v.userId !== userId) }) })),
   getUserVote: (commentId, userId) => get().comments.find(c => c.id===commentId)?.votes.find(v => v.userId===userId)?.vote || null,

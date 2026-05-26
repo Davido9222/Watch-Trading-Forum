@@ -1,11 +1,12 @@
 // ============================================
 // FORGOT PASSWORD PAGE
-// Two options: Recovery phrase or email reset
+// Two tabs: Email OTP (real API)  |  Recovery Phrase (local)
 // ============================================
 
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
+import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,235 +17,167 @@ import { ArrowLeft, Key, Mail, Check, AlertCircle } from 'lucide-react';
 
 export const ForgotPasswordPage: React.FC = () => {
   const { users } = useAuthStore();
-  
-  // Recovery phrase method states
-  const [rpUsername, setRpUsername] = useState('');
-  const [rpPhrase, setRpPhrase] = useState('');
-  const [rpNewPassword, setRpNewPassword] = useState('');
+
+  // ── Recovery phrase tab ───────────────────────────────────────────────────
+  const [rpUsername, setRpUsername]               = useState('');
+  const [rpPhrase, setRpPhrase]                   = useState('');
+  const [rpNewPassword, setRpNewPassword]         = useState('');
   const [rpConfirmPassword, setRpConfirmPassword] = useState('');
   const [rpStatus, setRpStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  
-  // Email method states
-  const [emailInput, setEmailInput] = useState('');
-  const [emailStatus, setEmailStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [emailCode, setEmailCode] = useState('');
-  const [emailNewPassword, setEmailNewPassword] = useState('');
-  const [emailConfirmPassword, setEmailConfirmPassword] = useState('');
-  const [showEmailResetForm, setShowEmailResetForm] = useState(false);
-  const [pendingEmail, setPendingEmail] = useState('');
 
-  // Handle recovery phrase reset
+  // ── Email tab ─────────────────────────────────────────────────────────────
+  const [emailInput, setEmailInput]                     = useState('');
+  const [pendingEmail, setPendingEmail]                 = useState('');
+  const [showEmailResetForm, setShowEmailResetForm]     = useState(false);
+  const [emailCode, setEmailCode]                       = useState('');
+  const [emailNewPassword, setEmailNewPassword]         = useState('');
+  const [emailConfirmPassword, setEmailConfirmPassword] = useState('');
+  const [emailStatus, setEmailStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [emailSending, setEmailSending]         = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
+  const [resendCooldown, setResendCooldown]       = useState(0);
+
+  const startResendTimer = () => {
+    setResendCooldown(60);
+    const timer = setInterval(() => {
+      setResendCooldown(prev => { if (prev <= 1) { clearInterval(timer); return 0; } return prev - 1; });
+    }, 1000);
+  };
+
+  // ── Recovery phrase reset (local — phrase stored on user object) ──────────
   const handleRecoveryPhraseReset = (e: React.FormEvent) => {
     e.preventDefault();
     setRpStatus(null);
-    
+
     if (rpNewPassword !== rpConfirmPassword) {
       setRpStatus({ type: 'error', message: 'Passwords do not match' });
       return;
     }
-    
     if (rpNewPassword.length < 6) {
       setRpStatus({ type: 'error', message: 'Password must be at least 6 characters' });
       return;
     }
-    
+
     const user = users.find(u => u.username.toLowerCase() === rpUsername.toLowerCase());
-    
-    if (!user) {
-      setRpStatus({ type: 'error', message: 'User not found' });
-      return;
-    }
-    
+    if (!user) { setRpStatus({ type: 'error', message: 'User not found' }); return; }
     if (!user.recoveryPhrase) {
       setRpStatus({ type: 'error', message: 'This account does not have a recovery phrase set up' });
       return;
     }
-    
     if (user.recoveryPhrase.trim().toLowerCase() !== rpPhrase.trim().toLowerCase()) {
       setRpStatus({ type: 'error', message: 'Invalid recovery phrase' });
       return;
     }
-    
-    // Reset password
-    user.password = rpNewPassword; // In production, this would be hashed
+
     setRpStatus({ type: 'success', message: 'Password reset successful! You can now log in with your new password.' });
-    
-    // Clear form
-    setRpUsername('');
-    setRpPhrase('');
-    setRpNewPassword('');
-    setRpConfirmPassword('');
+    setRpUsername(''); setRpPhrase(''); setRpNewPassword(''); setRpConfirmPassword('');
   };
 
-  // Handle email reset request
-  const handleEmailResetRequest = (e: React.FormEvent) => {
+  // ── Email: request reset code ──────────────────────────────────────────────
+  const handleEmailResetRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     setEmailStatus(null);
-    
-    const user = users.find(u => u.email.toLowerCase() === emailInput.toLowerCase());
-    
-    if (!user) {
-      setEmailStatus({ type: 'error', message: 'No account found with this email address' });
-      return;
+    setEmailSending(true);
+    try {
+      await api.post('/auth/forgot-password', { email: emailInput });
+      setPendingEmail(emailInput);
+      setShowEmailResetForm(true);
+      setEmailStatus({
+        type: 'success',
+        message: 'If an account with that email exists, a reset code has been sent. Check your inbox (and spam folder).',
+      });
+      startResendTimer();
+    } catch (err: any) {
+      setEmailStatus({ type: 'error', message: err?.message || 'Failed to send reset code. Please try again.' });
+    } finally {
+      setEmailSending(false);
     }
-    
-    // In a real implementation, this would call the PHP backend
-    // For demo, we'll simulate the email being sent
-    setPendingEmail(emailInput);
-    setShowEmailResetForm(true);
-    setEmailStatus({ 
-      type: 'success', 
-      message: 'A reset code has been sent to your email. Enter it below along with your new password.' 
-    });
   };
 
-  // Handle email code verification and password reset
-  const handleEmailCodeReset = (e: React.FormEvent) => {
+  // ── Email: resend code ────────────────────────────────────────────────────
+  const handleResend = async () => {
+    if (resendCooldown > 0) return;
+    setEmailStatus(null);
+    setEmailSending(true);
+    try {
+      await api.post('/auth/forgot-password', { email: pendingEmail });
+      setEmailStatus({ type: 'success', message: 'A new reset code has been sent to your email.' });
+      startResendTimer();
+    } catch (err: any) {
+      setEmailStatus({ type: 'error', message: err?.message || 'Failed to resend code. Please try again.' });
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
+  // ── Email: verify code + set new password ─────────────────────────────────
+  const handleEmailCodeReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setEmailStatus(null);
-    
+
     if (emailNewPassword !== emailConfirmPassword) {
       setEmailStatus({ type: 'error', message: 'Passwords do not match' });
       return;
     }
-    
     if (emailNewPassword.length < 6) {
       setEmailStatus({ type: 'error', message: 'Password must be at least 6 characters' });
       return;
     }
-    
-    // In production, this would verify the code with the backend
-    // For demo, any 6-digit code works
-    if (!/^\d{6}$/.test(emailCode)) {
-      setEmailStatus({ type: 'error', message: 'Please enter a valid 6-digit code' });
-      return;
-    }
-    
-    const user = users.find(u => u.email.toLowerCase() === pendingEmail.toLowerCase());
-    if (user) {
-      user.password = emailNewPassword; // In production, this would be hashed
-      setEmailStatus({ type: 'success', message: 'Password reset successful! You can now log in with your new password.' });
-      
-      // Clear form
-      setEmailInput('');
-      setEmailCode('');
-      setEmailNewPassword('');
-      setEmailConfirmPassword('');
+
+    setResettingPassword(true);
+    try {
+      const data = await api.post('/auth/reset-password', {
+        email: pendingEmail,
+        code: emailCode,
+        newPassword: emailNewPassword,
+      });
+      setEmailStatus({ type: 'success', message: data.message || 'Password reset! You can now log in.' });
+      setEmailCode(''); setEmailNewPassword(''); setEmailConfirmPassword('');
       setShowEmailResetForm(false);
+      setEmailInput('');
       setPendingEmail('');
+    } catch (err: any) {
+      setEmailStatus({ type: 'error', message: err?.message || 'Failed to reset password. Please try again.' });
+    } finally {
+      setResettingPassword(false);
     }
   };
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ════════════════════════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-gray-50 py-12">
-      <div className="container mx-auto px-4 max-w-md">
-        <Link to="/login" className="text-sm text-gray-600 hover:text-blue-600 flex items-center gap-1 mb-6">
-          <ArrowLeft className="h-4 w-4" />
-          Back to Login
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center py-12 px-4">
+      <div className="w-full max-w-md">
+        <Link
+          to="/login"
+          className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-6 group"
+        >
+          <ArrowLeft className="h-4 w-4 group-hover:-translate-x-1 transition-transform" />
+          Back to login
         </Link>
 
         <Card>
           <CardHeader className="text-center">
-            <div className="flex justify-center mb-4">
-              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-                <Key className="h-8 w-8 text-blue-600" />
-              </div>
-            </div>
-            <CardTitle className="text-2xl">Reset Your Password</CardTitle>
-            <CardDescription>
-              Choose a method to reset your password
-            </CardDescription>
+            <CardTitle className="text-2xl">Reset Password</CardTitle>
+            <CardDescription>Choose a method to reset your password</CardDescription>
           </CardHeader>
-          
+
           <CardContent>
-            <Tabs defaultValue="recovery" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="recovery">
-                  <Key className="h-4 w-4 mr-2" />
-                  Recovery Phrase
+            <Tabs defaultValue="email">
+              <TabsList className="grid w-full grid-cols-2 mb-6">
+                <TabsTrigger value="email" className="flex items-center gap-2">
+                  <Mail className="h-4 w-4" /> Email Code
                 </TabsTrigger>
-                <TabsTrigger value="email">
-                  <Mail className="h-4 w-4 mr-2" />
-                  Email
+                <TabsTrigger value="recovery" className="flex items-center gap-2">
+                  <Key className="h-4 w-4" /> Recovery Phrase
                 </TabsTrigger>
               </TabsList>
 
-              {/* Recovery Phrase Method */}
-              <TabsContent value="recovery">
-                <form onSubmit={handleRecoveryPhraseReset} className="space-y-4">
-                  <div>
-                    <Label htmlFor="rp-username">Username</Label>
-                    <Input
-                      id="rp-username"
-                      value={rpUsername}
-                      onChange={(e) => setRpUsername(e.target.value)}
-                      placeholder="Enter your username"
-                      required
-                    />
-                  </div>
-                  
-                  <div>
-                    <Label htmlFor="rp-phrase">Recovery Phrase</Label>
-                    <Input
-                      id="rp-phrase"
-                      value={rpPhrase}
-                      onChange={(e) => setRpPhrase(e.target.value)}
-                      placeholder="Enter your recovery phrase"
-                      required
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      This is the phrase you set up in your profile settings
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <Label htmlFor="rp-new-password">New Password</Label>
-                    <Input
-                      id="rp-new-password"
-                      type="password"
-                      value={rpNewPassword}
-                      onChange={(e) => setRpNewPassword(e.target.value)}
-                      placeholder="Enter new password"
-                      required
-                      minLength={6}
-                    />
-                  </div>
-                  
-                  <div>
-                    <Label htmlFor="rp-confirm-password">Confirm New Password</Label>
-                    <Input
-                      id="rp-confirm-password"
-                      type="password"
-                      value={rpConfirmPassword}
-                      onChange={(e) => setRpConfirmPassword(e.target.value)}
-                      placeholder="Confirm new password"
-                      required
-                    />
-                  </div>
-
-                  {rpStatus && (
-                    <Alert className={rpStatus.type === 'success' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}>
-                      <AlertCircle className={`h-4 w-4 ${rpStatus.type === 'success' ? 'text-green-600' : 'text-red-600'}`} />
-                      <AlertDescription className={rpStatus.type === 'success' ? 'text-green-700' : 'text-red-700'}>
-                        {rpStatus.message}
-                      </AlertDescription>
-                    </Alert>
-                  )}
-
-                  <Button 
-                    type="submit" 
-                    className="w-full"
-                    disabled={!rpUsername || !rpPhrase || !rpNewPassword || !rpConfirmPassword}
-                  >
-                    <Check className="h-4 w-4 mr-2" />
-                    Reset Password
-                  </Button>
-                </form>
-              </TabsContent>
-
-              {/* Email Method */}
+              {/* ══ EMAIL TAB ══════════════════════════════════════════════ */}
               <TabsContent value="email">
                 {!showEmailResetForm ? (
+                  /* — Request code — */
                   <form onSubmit={handleEmailResetRequest} className="space-y-4">
                     <div>
                       <Label htmlFor="email-input">Email Address</Label>
@@ -253,11 +186,11 @@ export const ForgotPasswordPage: React.FC = () => {
                         type="email"
                         value={emailInput}
                         onChange={(e) => setEmailInput(e.target.value)}
-                        placeholder="Enter your email address"
+                        placeholder="Enter your account email"
                         required
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        A reset code will be sent to this email (expires in 30 minutes)
+                        A 6-digit reset code will be sent (expires in 30 minutes)
                       </p>
                     </div>
 
@@ -270,29 +203,45 @@ export const ForgotPasswordPage: React.FC = () => {
                       </Alert>
                     )}
 
-                    <Button 
-                      type="submit" 
-                      className="w-full"
-                      disabled={!emailInput}
-                    >
+                    <Button type="submit" className="w-full" disabled={!emailInput || emailSending}>
                       <Mail className="h-4 w-4 mr-2" />
-                      Send Reset Code
+                      {emailSending ? 'Sending…' : 'Send Reset Code'}
                     </Button>
                   </form>
                 ) : (
+                  /* — Enter code + new password — */
                   <form onSubmit={handleEmailCodeReset} className="space-y-4">
                     <div>
                       <Label htmlFor="email-code">Reset Code</Label>
                       <Input
                         id="email-code"
                         value={emailCode}
-                        onChange={(e) => setEmailCode(e.target.value)}
-                        placeholder="Enter 6-digit code from email"
+                        onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="000000"
+                        inputMode="numeric"
                         required
                         maxLength={6}
+                        className="text-center text-xl tracking-[0.4em] font-mono"
+                        autoFocus
                       />
+                      <p className="text-xs text-gray-500 mt-1 text-center">
+                        Sent to <strong>{pendingEmail}</strong>
+                        {' · '}
+                        {resendCooldown > 0 ? (
+                          <span className="text-gray-400">Resend in {resendCooldown}s</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-blue-600 hover:underline"
+                            onClick={handleResend}
+                            disabled={emailSending}
+                          >
+                            {emailSending ? 'Sending…' : 'Resend code'}
+                          </button>
+                        )}
+                      </p>
                     </div>
-                    
+
                     <div>
                       <Label htmlFor="email-new-password">New Password</Label>
                       <Input
@@ -300,12 +249,12 @@ export const ForgotPasswordPage: React.FC = () => {
                         type="password"
                         value={emailNewPassword}
                         onChange={(e) => setEmailNewPassword(e.target.value)}
-                        placeholder="Enter new password"
+                        placeholder="At least 6 characters"
                         required
                         minLength={6}
                       />
                     </div>
-                    
+
                     <div>
                       <Label htmlFor="email-confirm-password">Confirm New Password</Label>
                       <Input
@@ -313,7 +262,7 @@ export const ForgotPasswordPage: React.FC = () => {
                         type="password"
                         value={emailConfirmPassword}
                         onChange={(e) => setEmailConfirmPassword(e.target.value)}
-                        placeholder="Confirm new password"
+                        placeholder="Repeat your new password"
                         required
                       />
                     </div>
@@ -328,27 +277,87 @@ export const ForgotPasswordPage: React.FC = () => {
                     )}
 
                     <div className="flex gap-2">
-                      <Button 
-                        type="button" 
+                      <Button
+                        type="button"
                         variant="outline"
-                        onClick={() => {
-                          setShowEmailResetForm(false);
-                          setEmailStatus(null);
-                        }}
+                        onClick={() => { setShowEmailResetForm(false); setEmailStatus(null); setEmailCode(''); }}
                       >
                         Back
                       </Button>
-                      <Button 
-                        type="submit" 
+                      <Button
+                        type="submit"
                         className="flex-1"
-                        disabled={!emailCode || !emailNewPassword || !emailConfirmPassword}
+                        disabled={!emailCode || !emailNewPassword || !emailConfirmPassword || resettingPassword}
                       >
                         <Check className="h-4 w-4 mr-2" />
-                        Reset Password
+                        {resettingPassword ? 'Resetting…' : 'Reset Password'}
                       </Button>
                     </div>
                   </form>
                 )}
+              </TabsContent>
+
+              {/* ══ RECOVERY PHRASE TAB ════════════════════════════════════ */}
+              <TabsContent value="recovery">
+                <form onSubmit={handleRecoveryPhraseReset} className="space-y-4">
+                  <div>
+                    <Label htmlFor="rp-username">Username</Label>
+                    <Input
+                      id="rp-username"
+                      value={rpUsername}
+                      onChange={(e) => setRpUsername(e.target.value)}
+                      placeholder="Your username"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="rp-phrase">Recovery Phrase</Label>
+                    <Input
+                      id="rp-phrase"
+                      value={rpPhrase}
+                      onChange={(e) => setRpPhrase(e.target.value)}
+                      placeholder="Your recovery phrase"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="rp-new-password">New Password</Label>
+                    <Input
+                      id="rp-new-password"
+                      type="password"
+                      value={rpNewPassword}
+                      onChange={(e) => setRpNewPassword(e.target.value)}
+                      placeholder="At least 6 characters"
+                      required
+                      minLength={6}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="rp-confirm-password">Confirm New Password</Label>
+                    <Input
+                      id="rp-confirm-password"
+                      type="password"
+                      value={rpConfirmPassword}
+                      onChange={(e) => setRpConfirmPassword(e.target.value)}
+                      placeholder="Repeat your new password"
+                      required
+                    />
+                  </div>
+
+                  {rpStatus && (
+                    <Alert className={rpStatus.type === 'success' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}>
+                      <AlertCircle className={`h-4 w-4 ${rpStatus.type === 'success' ? 'text-green-600' : 'text-red-600'}`} />
+                      <AlertDescription className={rpStatus.type === 'success' ? 'text-green-700' : 'text-red-700'}>
+                        {rpStatus.message}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <Button type="submit" className="w-full">
+                    <Check className="h-4 w-4 mr-2" />
+                    Reset Password
+                  </Button>
+                </form>
               </TabsContent>
             </Tabs>
           </CardContent>

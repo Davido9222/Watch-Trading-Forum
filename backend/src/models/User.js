@@ -42,9 +42,11 @@ const userSchema = new mongoose.Schema({
   karma: { type: Number, default: 0 },
   mutedThreads: { type: Array, default: [] },
   hallOfShame: { type: Object, default: null },
-  // Per-user rate-limit timestamps (for 1 thread / 1 comment per minute)
   lastThreadAt: { type: Date, default: null },
-  lastCommentAt: { type: Date, default: null }
+  lastCommentAt: { type: Date, default: null },
+  // ── Password reset via email ──────────────────
+  passwordResetCode:    { type: String,  default: null },
+  passwordResetExpires: { type: Date,    default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

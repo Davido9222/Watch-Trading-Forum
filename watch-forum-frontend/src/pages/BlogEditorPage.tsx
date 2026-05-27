@@ -1,7 +1,7 @@
 // ============================================
 // BLOG EDITOR PAGE
 // Create and edit blog posts (Owner only)
-// Auto-translates to all languages using MyMemory API
+// Auto-translates to all supported languages via MyMemory API on publish
 // ============================================
 
 import React, { useState, useEffect } from 'react';
@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { SUPPORTED_LANGUAGES } from '@/stores/languageStore';
 import { getTranslationUrls } from '@/services/translationService';
 import { api } from '@/lib/api';
+import type { BlogPost } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,7 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { X, Plus, Save, Eye, ArrowLeft, Globe, ExternalLink, Copy, Check, Trash2, Loader2 } from 'lucide-react';
 
-// ─── Language code → MyMemory-compatible code map ────────────────────────────
+// MyMemory uses different codes for some languages
 const LANG_CODE_MAP: Record<string, string> = {
   zh: 'zh-CN',
   hi: 'hi',
@@ -34,7 +35,7 @@ const LANG_CODE_MAP: Record<string, string> = {
   id: 'id',
   de: 'de',
   ja: 'ja',
-  pcm: 'en', // Nigerian Pidgin fallback to English
+  pcm: 'en', // Nigerian Pidgin — fallback to English
   mr: 'mr',
 };
 
@@ -42,12 +43,17 @@ export const BlogEditorPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const { currentUser, isOwner } = useAuthStore();
-  const { createPost, updatePost, getOriginalPostByAnySlug, deletePostWithTranslations } = useBlogStore();
+  const {
+    createPost,
+    updatePost,
+    setPostTranslations,
+    getOriginalPostByAnySlug,
+    deletePostWithTranslations,
+  } = useBlogStore();
 
   const isEditing = !!slug;
   const existingPost = slug ? getOriginalPostByAnySlug(slug) : undefined;
 
-  // Form state
   const [title, setTitle] = useState('');
   const [excerpt, setExcerpt] = useState('');
   const [content, setContent] = useState('');
@@ -90,37 +96,42 @@ export const BlogEditorPage: React.FC = () => {
   const generateSlug = (t: string) =>
     t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
-  // ─── Translate into all languages via backend ─────────────────────────────
-  const buildTranslations = async (
+  // ─── Fetch real translations from backend for every non-English language ──
+  const fetchTranslations = async (
     baseSlug: string,
     t: string,
     ex: string,
     body: string,
     mt: string,
     md: string
-  ) => {
-    const translations: Record<string, { title: string; slug: string; excerpt: string; content: string; metaTitle: string; metaDescription: string }> = {};
+  ): Promise<BlogPost['translations']> => {
+    const translations: BlogPost['translations'] = {};
     const nonEnglish = SUPPORTED_LANGUAGES.filter(l => l.code !== 'en');
 
     for (const lang of nonEnglish) {
       const targetCode = LANG_CODE_MAP[lang.code] || lang.code;
-      setTranslationProgress(`Translating to ${lang.name} (${lang.flag})…`);
+      setTranslationProgress(`Translating to ${lang.name} ${lang.flag}…`);
       try {
-        const data = await (api.post('/translate', {
+        const data = await api.post('/translate', {
           texts: [t, ex, body, mt || t, md || ex],
           targetLang: targetCode,
-        }) as Promise<{ translations: string[] }>);
+        }) as { translations: string[] };
+
         const [transTitle, transExcerpt, transContent, transMetaTitle, transMetaDesc] = data.translations;
-        translations[lang.code] = {
+
+        translations![lang.code] = {
           title: transTitle || t,
           slug: `${baseSlug}-${lang.code}`,
           excerpt: transExcerpt || ex,
-          content: transContent ? `<p>${transContent.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>` : body,
-          metaTitle: transMetaTitle || t,
-          metaDescription: transMetaDesc || ex,
+          content: transContent
+            ? `<p>${transContent.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>`
+            : body,
+          metaTitle: transMetaTitle || mt || t,
+          metaDescription: transMetaDesc || md || ex,
         };
       } catch {
-        translations[lang.code] = {
+        // On error, still add the language with English fallback so the flag shows
+        translations![lang.code] = {
           title: t,
           slug: `${baseSlug}-${lang.code}`,
           excerpt: ex,
@@ -140,16 +151,8 @@ export const BlogEditorPage: React.FC = () => {
     if (!currentUser) return;
 
     setIsSubmitting(true);
-    const postSlug = generateSlug(title);
 
-    const translations = await buildTranslations(
-      postSlug,
-      title.trim(),
-      excerpt.trim(),
-      content.trim(),
-      metaTitle.trim(),
-      metaDescription.trim()
-    );
+    const postSlug = generateSlug(title);
 
     const postData = {
       title: title.trim(),
@@ -165,19 +168,36 @@ export const BlogEditorPage: React.FC = () => {
       metaDescription: metaDescription.trim() || excerpt.trim(),
     };
 
+    let savedId: string;
+
     if (isEditing && existingPost) {
-      updatePost(existingPost.id, { ...postData, translations }, false);
-      navigate(`/blog/${postData.slug}`);
+      // Update the post first (with autoTranslate=false to skip old hardcoded translations)
+      updatePost(existingPost.id, postData, false);
+      savedId = existingPost.id;
     } else {
-      const newPost = createPost({ ...postData, translations } as any, false);
-      navigate(`/blog/${newPost.slug}`);
+      // Create post first (autoTranslate=false — we will set real translations below)
+      const newPost = createPost(postData, false);
+      savedId = newPost.id;
     }
 
+    // Now fetch real translations from the backend and save them directly
+    const translations = await fetchTranslations(
+      postSlug,
+      postData.title,
+      postData.excerpt,
+      postData.content,
+      postData.metaTitle,
+      postData.metaDescription
+    );
+
+    setPostTranslations(savedId, translations);
+
     setIsSubmitting(false);
+    navigate(`/blog/${postSlug}`);
   };
 
   const handleDelete = () => {
-    if (existingPost && confirm('Are you sure you want to delete this post and all its translations? This cannot be undone.')) {
+    if (existingPost && confirm('Delete this post and all its translations? This cannot be undone.')) {
       deletePostWithTranslations(existingPost.id);
       navigate('/blog');
     }
@@ -252,7 +272,7 @@ export const BlogEditorPage: React.FC = () => {
               {isSubmitting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  {translationProgress || 'Publishing…'}
+                  {translationProgress || 'Saving…'}
                 </>
               ) : (
                 <>
@@ -276,7 +296,7 @@ export const BlogEditorPage: React.FC = () => {
           </div>
         )}
 
-        {/* Translation URLs (editing) */}
+        {/* Translation URLs (editing an existing post) */}
         {isEditing && translationUrls.length > 1 && (
           <Card className="mb-6 border-green-200 bg-green-50">
             <CardHeader>
@@ -307,7 +327,6 @@ export const BlogEditorPage: React.FC = () => {
           </Card>
         )}
 
-        {/* Main Content */}
         <div className="space-y-6">
 
           {/* Title */}
@@ -317,11 +336,11 @@ export const BlogEditorPage: React.FC = () => {
               <Input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Enter a compelling title..."
+                placeholder="Enter a compelling title…"
                 className="text-lg"
               />
               <p className="text-sm text-gray-500 mt-2">
-                URL slug: /blog/{generateSlug(title) || 'your-article-slug'}
+                URL: /blog/{generateSlug(title) || 'your-article-slug'}
               </p>
             </CardContent>
           </Card>
@@ -333,11 +352,11 @@ export const BlogEditorPage: React.FC = () => {
               <Textarea
                 value={excerpt}
                 onChange={(e) => setExcerpt(e.target.value)}
-                placeholder="Write a brief summary that will appear in search results and previews..."
+                placeholder="A short summary shown in search results and previews…"
                 rows={3}
               />
               <p className="text-sm text-gray-500 mt-2">
-                {excerpt.length} characters. Recommended: 150-160 characters for SEO.
+                {excerpt.length} characters — aim for 150–160 for best SEO
               </p>
             </CardContent>
           </Card>
@@ -352,14 +371,12 @@ export const BlogEditorPage: React.FC = () => {
                 placeholder="https://example.com/image.jpg"
               />
               {featuredImage && (
-                <div className="mt-4">
-                  <img
-                    src={featuredImage}
-                    alt="Preview"
-                    className="max-h-48 rounded-lg object-cover"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                </div>
+                <img
+                  src={featuredImage}
+                  alt="Preview"
+                  className="mt-4 max-h-48 rounded-lg object-cover"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
               )}
             </CardContent>
           </Card>
@@ -371,12 +388,12 @@ export const BlogEditorPage: React.FC = () => {
               <Textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                placeholder="Write your article content here. HTML tags are supported."
+                placeholder="Write your article here. HTML tags are supported."
                 rows={20}
                 className="font-mono text-sm"
               />
               <p className="text-sm text-gray-500 mt-2">
-                Supports HTML formatting. Use &lt;h2&gt;, &lt;h3&gt;, &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;a&gt;, &lt;ul&gt;, &lt;li&gt; tags.
+                Supports HTML: &lt;h2&gt;, &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;a&gt;, &lt;ul&gt;, &lt;li&gt;
               </p>
             </CardContent>
           </Card>
@@ -399,7 +416,7 @@ export const BlogEditorPage: React.FC = () => {
                 <Input
                   value={newTag}
                   onChange={(e) => setNewTag(e.target.value)}
-                  placeholder="Add a tag..."
+                  placeholder="Add a tag…"
                   onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
                 />
                 <Button type="button" onClick={handleAddTag} variant="outline">
@@ -409,7 +426,7 @@ export const BlogEditorPage: React.FC = () => {
             </CardContent>
           </Card>
 
-          {/* SEO Settings */}
+          {/* SEO */}
           <Card>
             <CardHeader><CardTitle>SEO Settings</CardTitle></CardHeader>
             <CardContent className="space-y-4">
@@ -420,7 +437,7 @@ export const BlogEditorPage: React.FC = () => {
                   onChange={(e) => setMetaTitle(e.target.value)}
                   placeholder={title || 'Custom title for search engines'}
                 />
-                <p className="text-sm text-gray-500 mt-1">Defaults to article title if empty</p>
+                <p className="text-sm text-gray-500 mt-1">Defaults to article title if left blank</p>
               </div>
               <div>
                 <Label>Meta Description (optional)</Label>
@@ -430,7 +447,7 @@ export const BlogEditorPage: React.FC = () => {
                   placeholder={excerpt || 'Custom description for search engines'}
                   rows={2}
                 />
-                <p className="text-sm text-gray-500 mt-1">Defaults to excerpt if empty</p>
+                <p className="text-sm text-gray-500 mt-1">Defaults to excerpt if left blank</p>
               </div>
             </CardContent>
           </Card>
@@ -440,13 +457,14 @@ export const BlogEditorPage: React.FC = () => {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-blue-800">
                 <Globe className="h-5 w-5" />
-                Real-Time Translation into {SUPPORTED_LANGUAGES.length - 1} Languages
+                Auto-translates into {SUPPORTED_LANGUAGES.length - 1} languages on publish
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-blue-700 mb-2">
-                When you publish, this article is automatically translated into all supported languages using the MyMemory translation API.
-                Visitors clicking a flag on the blog post will see the full article in their language.
+              <p className="text-sm text-blue-700 mb-3">
+                When you click Publish, the title, excerpt, and content are translated into every
+                supported language using the MyMemory API. Visitors clicking a country flag will
+                read the full article in their language.
               </p>
               <div className="flex flex-wrap gap-2">
                 {SUPPORTED_LANGUAGES.filter(l => l.code !== 'en').map(lang => (

@@ -6,7 +6,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { BlogPost } from '@/types';
-import { autoTranslateBlogPost, getTranslationUrls } from '@/services/translationService';
+import { autoTranslateBlogPost, autoTranslateBlogPostAsync, getTranslationUrls } from '@/services/translationService';
 
 interface BlogState {
   posts: BlogPost[];
@@ -30,8 +30,8 @@ interface BlogState {
   // New functions for handling translated slugs
   getOriginalPostByAnySlug: (slug: string) => BlogPost | undefined;
   getPostIdByAnySlug: (slug: string) => string | undefined;
-  // Directly set real translations (from API) without overwriting them
-  setPostTranslations: (id: string, translations: BlogPost['translations']) => void;
+  // Async real translation via MyMemory API
+  translatePost: (id: string) => Promise<void>;
 }
 
 // ============================================
@@ -280,18 +280,6 @@ export const useBlogStore = create<BlogState>()(
       },
 
       // ============================================
-      // SET REAL TRANSLATIONS (from API)
-      // Directly overwrites translations without touching other fields
-      // ============================================
-      setPostTranslations: (id, translations) => {
-        set(state => ({
-          posts: state.posts.map(post =>
-            post.id === id ? { ...post, translations } : post
-          ),
-        }));
-      },
-
-      // ============================================
       // GET TRANSLATION URLS FOR A POST
       // Returns all language URLs for SEO
       // ============================================
@@ -308,9 +296,9 @@ export const useBlogStore = create<BlogState>()(
         const post = get().posts.find(post => {
           // Check English slug
           if (post.slug === slug) return true;
-          // Check translated slugs — guard against null/undefined translation entries
+          // Check translated slugs
           if (post.translations) {
-            return Object.values(post.translations).some(t => t != null && t.slug === slug);
+            return Object.values(post.translations).some(t => t.slug === slug);
           }
           return false;
         });
@@ -332,9 +320,11 @@ export const useBlogStore = create<BlogState>()(
       // ============================================
       getOriginalPostByAnySlug: (slug: string) => {
         return get().posts.find(post => {
+          // Check English slug
           if (post.slug === slug) return true;
+          // Check translated slugs
           if (post.translations) {
-            return Object.values(post.translations).some(t => t != null && t.slug === slug);
+            return Object.values(post.translations).some(t => t.slug === slug);
           }
           return false;
         });
@@ -348,7 +338,7 @@ export const useBlogStore = create<BlogState>()(
         const post = get().posts.find(post => {
           if (post.slug === slug) return true;
           if (post.translations) {
-            return Object.values(post.translations).some(t => t != null && t.slug === slug);
+            return Object.values(post.translations).some(t => t.slug === slug);
           }
           return false;
         });
@@ -422,15 +412,15 @@ export const useBlogStore = create<BlogState>()(
       getTranslatedPost: (post, lang) => {
         const translation = post.translations?.[lang];
         if (!translation) return post;
-
+        
         return {
           ...post,
-          title: translation.title || post.title,
-          slug: translation.slug || post.slug,
-          excerpt: translation.excerpt || post.excerpt,
-          content: translation.content || post.content,
-          metaTitle: translation.metaTitle || post.metaTitle,
-          metaDescription: translation.metaDescription || post.metaDescription,
+          title: translation.title,
+          slug: translation.slug,
+          excerpt: translation.excerpt,
+          content: translation.content,
+          metaTitle: translation.metaTitle,
+          metaDescription: translation.metaDescription,
         };
       },
 
@@ -439,6 +429,32 @@ export const useBlogStore = create<BlogState>()(
       // ============================================
       generateTranslatedSlug: (baseSlug, lang) => {
         return `${baseSlug}-${lang}`;
+      },
+
+      // ============================================
+      // TRANSLATE POST — Calls MyMemory API in background
+      // Call after createPost/updatePost to get real translations.
+      // The post is immediately visible in English; translations
+      // are saved to the store when the API calls complete.
+      // ============================================
+      translatePost: async (id: string) => {
+        const post = get().posts.find(p => p.id === id);
+        if (!post) return;
+        try {
+          const translations = await autoTranslateBlogPostAsync(
+            post.title,
+            post.excerpt,
+            post.content,
+            post.metaTitle,
+            post.metaDescription,
+            post.slug
+          );
+          set(state => ({
+            posts: state.posts.map(p => p.id === id ? { ...p, translations } : p),
+          }));
+        } catch (err) {
+          console.error('Background translation failed:', err);
+        }
       },
 
     }),

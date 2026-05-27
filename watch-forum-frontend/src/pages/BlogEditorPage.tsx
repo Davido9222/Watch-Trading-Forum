@@ -22,7 +22,7 @@ export const BlogEditorPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const { currentUser, isOwner } = useAuthStore();
-  const { createPost, updatePost, getOriginalPostByAnySlug, deletePostWithTranslations } = useBlogStore();
+  const { createPost, updatePost, getOriginalPostByAnySlug, deletePostWithTranslations, translatePost } = useBlogStore();
 
   const isEditing = !!slug;
   // Use getOriginalPostByAnySlug to find the post from any slug (English or translated)
@@ -38,6 +38,7 @@ export const BlogEditorPage: React.FC = () => {
   const [metaTitle, setMetaTitle] = useState('');
   const [metaDescription, setMetaDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
 
   // Redirect if not owner
@@ -103,13 +104,19 @@ export const BlogEditorPage: React.FC = () => {
 
     if (isEditing && existingPost) {
       updatePost(existingPost.id, postData);
+      setIsSubmitting(false);
+      // Kick off real translation in the background (fire and forget)
+      setIsTranslating(true);
+      translatePost(existingPost.id).finally(() => setIsTranslating(false));
       navigate(`/blog/${postData.slug}`);
     } else {
       const newPost = createPost(postData);
+      setIsSubmitting(false);
+      // Kick off real translation in the background (fire and forget)
+      setIsTranslating(true);
+      translatePost(newPost.id).finally(() => setIsTranslating(false));
       navigate(`/blog/${newPost.slug}`);
     }
-
-    setIsSubmitting(false);
   };
 
   const handleDelete = () => {
@@ -188,8 +195,14 @@ export const BlogEditorPage: React.FC = () => {
               className="bg-blue-600 hover:bg-blue-700"
             >
               <Save className="h-4 w-4 mr-2" />
-              {isEditing ? 'Update' : 'Publish'}
+              {isSubmitting ? 'Saving...' : isEditing ? 'Update' : 'Publish'}
             </Button>
+            {isTranslating && (
+              <span className="text-xs text-blue-600 flex items-center gap-1 ml-1">
+                <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full" />
+                Translating...
+              </span>
+            )}
           </div>
         </div>
 

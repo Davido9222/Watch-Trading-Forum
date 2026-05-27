@@ -1,29 +1,35 @@
 // ============================================
-// MAILER CONFIG
-// Nodemailer with Gmail SMTP
-// Set SMTP_USER and SMTP_PASS in Render environment variables.
-// SMTP_PASS must be a Gmail App Password (not your normal password).
-// How to get App Password:
-//   1. Go to myaccount.google.com → Security
-//   2. Enable 2-Step Verification
-//   3. Search "App passwords" → Create one for "Mail"
-//   4. Copy the 16-character password → paste as SMTP_PASS
+// MAILER CONFIG — Gmail SMTP via port 587 (STARTTLS)
+// Port 465 (SSL) is blocked on Render/AWS. Port 587 works reliably.
+//
+// Required Render env vars:
+//   SMTP_USER  — your Gmail address  (e.g. yourforum@gmail.com)
+//   SMTP_PASS  — Gmail App Password  (16 chars, spaces OK)
+//
+// How to get a Gmail App Password:
+//   myaccount.google.com → Security → 2-Step Verification → App passwords
 // ============================================
 
 const nodemailer = require('nodemailer');
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false,       // false = STARTTLS (upgraded AFTER connect — NOT SSL on connect)
+  requireTLS: true,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  connectionTimeout: 10000,  // fail after 10 s instead of hanging forever
+  greetingTimeout:   10000,
+  socketTimeout:     15000,
 });
 
 async function sendMail(to, subject, html) {
   if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
     throw new Error(
-      'Email service not configured. Set SMTP_USER and SMTP_PASS in Render environment variables.'
+      'Email service not configured. Add SMTP_USER and SMTP_PASS to your Render environment variables.'
     );
   }
   return transporter.sendMail({
@@ -36,18 +42,15 @@ async function sendMail(to, subject, html) {
 
 function otpEmailHtml(otp, purpose) {
   const title = purpose === 'register' ? 'Verify Your Email' : 'Reset Your Password';
-  const body =
-    purpose === 'register'
-      ? 'Thank you for joining Watch Trading Forums! Use the code below to verify your email and complete registration.'
-      : 'You requested a password reset for your Watch Trading Forums account. Use the code below to set a new password.';
+  const body  = purpose === 'register'
+    ? 'Thank you for joining Watch Trading Forums! Use the code below to verify your email and complete registration.'
+    : 'You requested a password reset for your Watch Trading Forums account. Use the code below to set a new password.';
   return `
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="UTF-8"></head>
+    <!DOCTYPE html><html><head><meta charset="UTF-8"></head>
     <body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,sans-serif;">
       <div style="max-width:480px;margin:40px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
         <div style="background:#1e293b;padding:28px 32px;text-align:center;">
-          <span style="font-size:32px;">⌚</span>
+          <span style="font-size:32px;">&#8987;</span>
           <h1 style="color:#fff;margin:8px 0 0;font-size:20px;font-weight:700;">Watch Trading Forums</h1>
         </div>
         <div style="padding:36px 32px;">
@@ -63,11 +66,10 @@ function otpEmailHtml(otp, purpose) {
           </p>
         </div>
         <div style="padding:16px 32px;background:#f8fafc;text-align:center;">
-          <p style="color:#cbd5e1;font-size:12px;margin:0;">© Watch Trading Forums</p>
+          <p style="color:#cbd5e1;font-size:12px;margin:0;">&copy; Watch Trading Forums</p>
         </div>
       </div>
-    </body>
-    </html>
+    </body></html>
   `;
 }
 

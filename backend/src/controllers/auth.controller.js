@@ -1,20 +1,8 @@
-// ============================================
-// AUTH CONTROLLER
-// sanitizeUser exposes all fields needed by the frontend.
-// New exports: sendRegisterOtp, forgotPassword, resetPassword
-// ============================================
-
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
+const OtpCode = require('../models/OtpCode');
 const { signToken } = require('../utils/token');
-const { sendMail, otpEmailHtml } = require('../config/mailer');
-
-// ── In-memory OTP store for registration (email → { otp, expires, username }) ──
-const registerOtpStore = new Map();
-
-function generateOtp() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
+const { sendEmail, otpEmailHtml } = require('../utils/email');
 
 function sanitizeUser(user) {
   const obj = user.toObject ? user.toObject() : user;
@@ -30,9 +18,6 @@ function sanitizeUser(user) {
     badges: obj.badges || [],
     isBanned: !!obj.isBanned,
     banReason: obj.banReason || undefined,
-    bannedBy: obj.bannedBy ? obj.bannedBy.toString() : undefined,
-    bannedByUsername: obj.bannedByUsername || undefined,
-    bannedAt: obj.bannedAt || undefined,
     postCount: obj.postCount || 0,
     commentCount: obj.commentCount || 0,
     createdAt: obj.createdAt,
@@ -52,70 +37,22 @@ function sanitizeUser(user) {
     hallOfShame: obj.hallOfShame || undefined,
     lastLoginAt: obj.lastLoginAt || undefined,
     lastLoginIP: obj.lastLoginIP || undefined,
-    lastThreadAt: obj.lastThreadAt || undefined,
-    lastCommentAt: obj.lastCommentAt || undefined,
   };
 }
 
-// ── SEND REGISTRATION OTP ──────────────────────────────────────────────────────
-// POST /api/auth/send-register-otp
-// Body: { email, username }
-// Validates email/username not taken, sends 6-digit OTP to email.
-exports.sendRegisterOtp = async (req, res) => {
-  try {
-    const { email, username } = req.body;
-    if (!email || !username) return res.status(400).json({ message: 'Email and username are required' });
+function generateOtp() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
-    const existingEmail = await User.findOne({ email: email.toLowerCase() });
-    if (existingEmail) return res.status(400).json({ message: 'Email already registered' });
-
-    const existingUsername = await User.findOne({ username });
-    if (existingUsername) return res.status(400).json({ message: 'Username already taken' });
-
-    const otp = generateOtp();
-    const expires = Date.now() + 30 * 60 * 1000; // 30 minutes
-    registerOtpStore.set(email.toLowerCase(), { otp, expires, username });
-
-    await sendMail(
-      email,
-      'Your Watch Trading Forums Verification Code',
-      otpEmailHtml(otp, 'register')
-    );
-
-    res.json({ message: 'Verification code sent to your email' });
-  } catch (error) {
-    console.error('sendRegisterOtp error:', error);
-    res.status(500).json({ message: error.message || 'Failed to send verification code' });
-  }
-};
-
-// ── REGISTER (with OTP verification) ──────────────────────────────────────────
-// POST /api/auth/register
-// Body: { username, email, password, country, language, otp }
+// ─── Existing: Register (direct, no email verify) ─────────────────────────────
 exports.register = async (req, res) => {
   try {
-    const { username, email, password, country, language, otp } = req.body;
+    const { username, email, password, country, language } = req.body;
     if (!username || !email || !password) return res.status(400).json({ message: 'Missing required fields' });
-
-    // Verify OTP
-    if (!otp) return res.status(400).json({ message: 'Verification code is required' });
-    const stored = registerOtpStore.get(email.toLowerCase());
-    if (!stored) return res.status(400).json({ message: 'No verification code found for this email. Please request a new code.' });
-    if (Date.now() > stored.expires) {
-      registerOtpStore.delete(email.toLowerCase());
-      return res.status(400).json({ message: 'Verification code has expired. Please request a new code.' });
-    }
-    if (stored.otp !== otp.toString().trim()) {
-      return res.status(400).json({ message: 'Invalid verification code' });
-    }
-    registerOtpStore.delete(email.toLowerCase());
-
-    // Check availability again (race condition guard)
     const existingEmail = await User.findOne({ email: email.toLowerCase() });
     if (existingEmail) return res.status(400).json({ message: 'Email already registered' });
     const existingUsername = await User.findOne({ username });
     if (existingUsername) return res.status(400).json({ message: 'Username already taken' });
-
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await User.create({
       username,
@@ -132,7 +69,180 @@ exports.register = async (req, res) => {
   }
 };
 
-// ── LOGIN ──────────────────────────────────────────────────────────────────────
+// ─── New: Send email verification OTP ─────────────────────────────────────────
+exports.sendVerifyEmail = async (req, res) => {
+  try {
+    const { email, username } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email is required' });
+
+    const existingEmail = await User.findOne({ email: email.toLowerCase() });
+    if (existingEmail) return res.status(400).json({ message: 'Email already registered' });
+
+    if (username) {
+      const existingUsername = await User.findOne({ username });
+      if (existingUsername) return res.status(400).json({ message: 'Username already taken' });
+    }
+
+    const code = generateOtp();
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+    await OtpCode.deleteMany({ email: email.toLowerCase(), type: 'verify_email' });
+    await OtpCode.create({ email: email.toLowerCase(), code, type: 'verify_email', expiresAt });
+
+    const emailResult = await sendEmail({
+      to: email,
+      subject: 'Verify your Watch Trading Forums email',
+      html: otpEmailHtml({ code, type: 'verify_email', username }),
+    });
+
+    if (!emailResult.success && process.env.RESEND_API_KEY) {
+      return res.status(500).json({ message: 'Failed to send verification email. Please try again.' });
+    }
+
+    const devCode = !process.env.RESEND_API_KEY ? code : undefined;
+    res.json({ success: true, message: 'Verification code sent to your email', ...(devCode && { devCode }) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── New: Verify email OTP and create account ─────────────────────────────────
+exports.verifyRegister = async (req, res) => {
+  try {
+    const { email, code, username, password, country, language } = req.body;
+    if (!email || !code || !username || !password) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    const otpRecord = await OtpCode.findOne({
+      email: email.toLowerCase(),
+      type: 'verify_email',
+      code,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!otpRecord) return res.status(400).json({ message: 'Invalid or expired verification code' });
+
+    const existingEmail = await User.findOne({ email: email.toLowerCase() });
+    if (existingEmail) return res.status(400).json({ message: 'Email already registered' });
+
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) return res.status(400).json({ message: 'Username already taken' });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = await User.create({
+      username,
+      email: email.toLowerCase(),
+      passwordHash,
+      country,
+      language,
+      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(username)}`,
+    });
+
+    await OtpCode.deleteMany({ email: email.toLowerCase(), type: 'verify_email' });
+
+    const token = signToken(user);
+    res.status(201).json({ token, user: sanitizeUser(user) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── New: Send password reset OTP ─────────────────────────────────────────────
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email is required' });
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.json({ success: true, message: 'If that email exists, a reset code has been sent' });
+    }
+
+    const code = generateOtp();
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+    await OtpCode.deleteMany({ email: email.toLowerCase(), type: 'reset_password' });
+    await OtpCode.create({ email: email.toLowerCase(), code, type: 'reset_password', expiresAt });
+
+    const emailResult = await sendEmail({
+      to: email,
+      subject: 'Reset your Watch Trading Forums password',
+      html: otpEmailHtml({ code, type: 'reset_password', username: user.username }),
+    });
+
+    const devCode = !process.env.RESEND_API_KEY ? code : undefined;
+    res.json({
+      success: true,
+      message: 'If that email exists, a reset code has been sent to it',
+      ...(devCode && { devCode }),
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── New: Verify reset OTP and set new password ───────────────────────────────
+exports.resetPassword = async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    const otpRecord = await OtpCode.findOne({
+      email: email.toLowerCase(),
+      type: 'reset_password',
+      code,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!otpRecord) return res.status(400).json({ message: 'Invalid or expired reset code' });
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    await OtpCode.deleteMany({ email: email.toLowerCase(), type: 'reset_password' });
+
+    res.json({ success: true, message: 'Password reset successfully. You can now log in.' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── New: Reset password by recovery phrase ───────────────────────────────────
+exports.resetByPhrase = async (req, res) => {
+  try {
+    const { username, recoveryPhrase, newPassword } = req.body;
+    if (!username || !recoveryPhrase || !newPassword) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user.recoveryPhrase) {
+      return res.status(400).json({ message: 'This account does not have a recovery phrase set up' });
+    }
+    if (user.recoveryPhrase.trim().toLowerCase() !== recoveryPhrase.trim().toLowerCase()) {
+      return res.status(400).json({ message: 'Invalid recovery phrase' });
+    }
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ success: true, message: 'Password reset successfully. You can now log in.' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── Existing: Login ──────────────────────────────────────────────────────────
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -155,77 +265,11 @@ exports.login = async (req, res) => {
   }
 };
 
-// ── ME ─────────────────────────────────────────────────────────────────────────
+// ─── Existing: Me ─────────────────────────────────────────────────────────────
 exports.me = async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
   res.json({ user: sanitizeUser(user) });
-};
-
-// ── FORGOT PASSWORD ────────────────────────────────────────────────────────────
-// POST /api/auth/forgot-password
-// Body: { email }
-// Generates a 6-digit OTP, saves it to the user document, sends email.
-exports.forgotPassword = async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ message: 'Email is required' });
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    // Always return success to prevent email enumeration
-    if (!user) return res.json({ message: 'If an account with that email exists, a reset code has been sent.' });
-
-    const otp = generateOtp();
-    user.passwordResetCode = otp;
-    user.passwordResetExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
-    await user.save();
-
-    await sendMail(
-      user.email,
-      'Your Watch Trading Forums Password Reset Code',
-      otpEmailHtml(otp, 'reset')
-    );
-
-    res.json({ message: 'If an account with that email exists, a reset code has been sent.' });
-  } catch (error) {
-    console.error('forgotPassword error:', error);
-    res.status(500).json({ message: error.message || 'Failed to send reset code' });
-  }
-};
-
-// ── RESET PASSWORD ─────────────────────────────────────────────────────────────
-// POST /api/auth/reset-password
-// Body: { email, code, newPassword }
-exports.resetPassword = async (req, res) => {
-  try {
-    const { email, code, newPassword } = req.body;
-    if (!email || !code || !newPassword) return res.status(400).json({ message: 'Email, code, and new password are required' });
-    if (newPassword.length < 6) return res.status(400).json({ message: 'Password must be at least 6 characters' });
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user || !user.passwordResetCode) {
-      return res.status(400).json({ message: 'Invalid or expired reset code' });
-    }
-    if (user.passwordResetExpires < new Date()) {
-      user.passwordResetCode = null;
-      user.passwordResetExpires = null;
-      await user.save();
-      return res.status(400).json({ message: 'Reset code has expired. Please request a new one.' });
-    }
-    if (user.passwordResetCode !== code.toString().trim()) {
-      return res.status(400).json({ message: 'Invalid reset code' });
-    }
-
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
-    user.passwordResetCode = null;
-    user.passwordResetExpires = null;
-    await user.save();
-
-    res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
-  } catch (error) {
-    console.error('resetPassword error:', error);
-    res.status(500).json({ message: error.message || 'Failed to reset password' });
-  }
 };
 
 exports.sanitizeUser = sanitizeUser;

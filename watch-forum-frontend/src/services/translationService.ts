@@ -1046,8 +1046,121 @@ export const getLanguageName = (code: string): string => {
   return lang?.name || code;
 };
 
+// ============================================
+// ASYNC TRANSLATION — MyMemory API (free, no API key required)
+// Rate limit: ~1000 requests/day per IP.  Max 440 chars per call.
+// New posts are translated in the background after publishing.
+// ============================================
+
+const MYMEMORY_LANG_MAP: Record<string, string> = {
+  es: 'es', fr: 'fr', de: 'de', ja: 'ja', zh: 'zh-CN',
+  ru: 'ru', nl: 'nl', pt: 'pt', ar: 'ar', hi: 'hi', id: 'id',
+};
+
+async function translateChunk(text: string, to: string): Promise<string> {
+  const langCode = MYMEMORY_LANG_MAP[to] || to;
+  try {
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${langCode}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const data = await res.json();
+    if (data.responseStatus === 200 && data.responseData?.translatedText) {
+      return data.responseData.translatedText;
+    }
+  } catch { /* fall through to return original */ }
+  return text;
+}
+
+function splitIntoChunks(text: string, maxLen = 440): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let rest = text.trim();
+  while (rest.length > 0) {
+    if (rest.length <= maxLen) { chunks.push(rest); break; }
+    let cut = rest.lastIndexOf(' ', maxLen);
+    if (cut <= 0) cut = maxLen;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  return chunks;
+}
+
+async function translatePlainText(text: string, to: string): Promise<string> {
+  if (!text?.trim() || to === 'en') return text;
+  const chunks = splitIntoChunks(text.trim());
+  const results = await Promise.all(chunks.map(c => translateChunk(c, to)));
+  return results.join(' ');
+}
+
+async function translateHTMLContent(html: string, to: string): Promise<string> {
+  if (!html?.trim() || to === 'en') return html;
+  // Process line by line: extract text, translate it, put it back into the HTML structure
+  const lines = html.split('\n');
+  const results: string[] = [];
+  for (const line of lines) {
+    const textContent = line.replace(/<[^>]+>/g, '').trim();
+    if (!textContent) { results.push(line); continue; }
+    const translated = await translatePlainText(textContent, to);
+    // Replace the text content in the original line (escape for regex safety)
+    const escaped = textContent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    results.push(line.replace(new RegExp(escaped, 'g'), translated));
+  }
+  return results.join('\n');
+}
+
+/**
+ * Translate a blog post into all supported languages using the MyMemory API.
+ * Call this AFTER creating/updating a post — it runs asynchronously in the background.
+ */
+export async function autoTranslateBlogPostAsync(
+  title: string,
+  excerpt: string,
+  content: string,
+  metaTitle?: string,
+  metaDescription?: string,
+  slug?: string
+): Promise<Record<string, BlogPostTranslation>> {
+  const langs = SUPPORTED_LANGUAGES.filter(l => l.code !== 'en').map(l => l.code);
+  const baseSlug = slug || title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  const translations: Record<string, BlogPostTranslation> = {};
+
+  await Promise.all(
+    langs.map(async (langCode) => {
+      try {
+        const [transTitle, transExcerpt, transContent, transMeta, transMetaDesc] = await Promise.all([
+          translatePlainText(title, langCode),
+          translatePlainText(excerpt, langCode),
+          translateHTMLContent(content, langCode),
+          translatePlainText(metaTitle || title, langCode),
+          translatePlainText(metaDescription || excerpt, langCode),
+        ]);
+        translations[langCode] = {
+          title: transTitle,
+          slug: `${baseSlug}-${langCode}`,
+          excerpt: transExcerpt,
+          content: transContent,
+          metaTitle: transMeta,
+          metaDescription: transMetaDesc,
+        };
+      } catch {
+        // On error fall back to English content
+        translations[langCode] = {
+          title,
+          slug: `${baseSlug}-${langCode}`,
+          excerpt,
+          content,
+          metaTitle: metaTitle || title,
+          metaDescription: metaDescription || excerpt,
+        };
+      }
+    })
+  );
+
+  return translations;
+}
+
 export default {
   autoTranslateBlogPost,
+  autoTranslateBlogPostAsync,
   getTranslationUrls,
   getLanguageName,
 };

@@ -30,8 +30,8 @@ interface BlogState {
   // New functions for handling translated slugs
   getOriginalPostByAnySlug: (slug: string) => BlogPost | undefined;
   getPostIdByAnySlug: (slug: string) => string | undefined;
-  // Async real translation via MyMemory API
-  translatePost: (id: string) => Promise<void>;
+    // Directly set real translations (from API) without overwriting them
+  setPostTranslations: (id: string, translations:BlogPost['translations']) => void;
 }
 
 // ============================================

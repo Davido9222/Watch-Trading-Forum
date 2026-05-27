@@ -1,39 +1,43 @@
 // ============================================
-// MAILER CONFIG — Gmail SMTP via port 587 (STARTTLS)
-// Port 465 (SSL) is blocked on Render/AWS. Port 587 works reliably.
+// MAILER CONFIG — Brevo (formerly Sendinblue) SMTP
 //
-// Required Render env vars:
-//   SMTP_USER  — your Gmail address  (e.g. yourforum@gmail.com)
-//   SMTP_PASS  — Gmail App Password  (16 chars, spaces OK)
+// WHY BREVO? Gmail SMTP is blocked by Render/AWS cloud IP ranges.
+// Brevo's relay works from any cloud platform, free, no domain verification needed.
 //
-// How to get a Gmail App Password:
-//   myaccount.google.com → Security → 2-Step Verification → App passwords
+// Setup (5 min):
+//   1. Sign up free at brevo.com
+//   2. Settings → SMTP & API → SMTP tab → copy SMTP Key
+//   3. Add these to Render Environment:
+//        BREVO_SMTP_USER = your Brevo account email
+//        BREVO_SMTP_KEY  = the SMTP key (NOT your login password)
+//
+// Free tier: 300 emails/day — plenty for a forum.
 // ============================================
 
 const nodemailer = require('nodemailer');
 
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
+  host: 'smtp-relay.brevo.com',
   port: 587,
-  secure: false,       // false = STARTTLS (upgraded AFTER connect — NOT SSL on connect)
+  secure: false,
   requireTLS: true,
   auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
+    user: process.env.BREVO_SMTP_USER,
+    pass: process.env.BREVO_SMTP_KEY,
   },
-  connectionTimeout: 10000,  // fail after 10 s instead of hanging forever
+  connectionTimeout: 10000,
   greetingTimeout:   10000,
   socketTimeout:     15000,
 });
 
 async function sendMail(to, subject, html) {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+  if (!process.env.BREVO_SMTP_USER || !process.env.BREVO_SMTP_KEY) {
     throw new Error(
-      'Email service not configured. Add SMTP_USER and SMTP_PASS to your Render environment variables.'
+      'Email not configured. Sign up free at brevo.com, then add BREVO_SMTP_USER and BREVO_SMTP_KEY to your Render env vars.'
     );
   }
   return transporter.sendMail({
-    from: `"Watch Trading Forums" <${process.env.SMTP_USER}>`,
+    from: `"Watch Trading Forums" <${process.env.BREVO_SMTP_USER}>`,
     to,
     subject,
     html,

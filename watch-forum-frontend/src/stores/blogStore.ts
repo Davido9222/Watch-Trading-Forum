@@ -280,7 +280,17 @@ export const useBlogStore = create<BlogState>()(
       },
 
       // ============================================
-      // GET TRANSLATION URLS FOR A POST
+            // SET REAL TRANSLATIONS (from API)
+      // Directly overwrites translations without touching other fields
+      // ============================================
+      setPostTranslations: (id, translations) => {
+        set(state => ({
+          posts: state.posts.map(post =>
+            post.id === id ? { ...post, translations } : post
+          ),
+        }));
+      },
+      // ============================================// GET TRANSLATION URLS FOR A POST
       // Returns all language URLs for SEO
       // ============================================
       getTranslationUrls: (postId: string) => {

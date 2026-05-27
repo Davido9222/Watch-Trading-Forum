@@ -11,14 +11,16 @@ import { useAuthStore } from '@/stores/authStore';
 import { SUPPORTED_LANGUAGES } from '@/stores/languageStore';
 import { getTranslationUrls } from '@/services/translationService';
 import { api } from '@/lib/api';
-import type { BlogPost } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { X, Plus, Save, Eye, ArrowLeft, Globe, ExternalLink, Copy, Check, Trash2, Loader2 } from 'lucide-react';
+import {
+  X, Plus, Save, Eye, ArrowLeft, Globe,
+  ExternalLink, Copy, Check, Trash2, Loader2
+} from 'lucide-react';
 
 // MyMemory uses different codes for some languages
 const LANG_CODE_MAP: Record<string, string> = {
@@ -35,24 +37,31 @@ const LANG_CODE_MAP: Record<string, string> = {
   id: 'id',
   de: 'de',
   ja: 'ja',
-  pcm: 'en', // Nigerian Pidgin — fallback to English
+  pcm: 'en',
   mr: 'mr',
 };
+
+type Translations = Record<string, {
+  title: string;
+  slug: string;
+  excerpt: string;
+  content: string;
+  metaTitle: string;
+  metaDescription: string;
+}>;
+
+const generateSlug = (t: string) =>
+  t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
 export const BlogEditorPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
-  const { currentUser, isOwner } = useAuthStore();
-  const {
-    createPost,
-    updatePost,
-    setPostTranslations,
-    getOriginalPostByAnySlug,
-    deletePostWithTranslations,
-  } = useBlogStore();
+
+  const { currentUser, isOwner, isInitializing } = useAuthStore();
+  const store = useBlogStore();
 
   const isEditing = !!slug;
-  const existingPost = slug ? getOriginalPostByAnySlug(slug) : undefined;
+  const existingPost = slug ? store.getOriginalPostByAnySlug(slug) : undefined;
 
   const [title, setTitle] = useState('');
   const [excerpt, setExcerpt] = useState('');
@@ -65,11 +74,16 @@ export const BlogEditorPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [translationProgress, setTranslationProgress] = useState('');
+  const [submitError, setSubmitError] = useState('');
 
+  // Wait for auth to finish loading before checking ownership
   useEffect(() => {
-    if (!isOwner()) navigate('/blog');
-  }, [isOwner, navigate]);
+    if (!isInitializing && !isOwner()) {
+      navigate('/blog');
+    }
+  }, [isInitializing, isOwner, navigate]);
 
+  // Populate form when editing
   useEffect(() => {
     if (existingPost) {
       setTitle(existingPost.title);
@@ -84,19 +98,16 @@ export const BlogEditorPage: React.FC = () => {
 
   const handleAddTag = () => {
     if (newTag.trim() && !tags.includes(newTag.trim())) {
-      setTags([...tags, newTag.trim()]);
+      setTags(prev => [...prev, newTag.trim()]);
       setNewTag('');
     }
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
-    setTags(tags.filter(tag => tag !== tagToRemove));
+    setTags(prev => prev.filter(t => t !== tagToRemove));
   };
 
-  const generateSlug = (t: string) =>
-    t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-  // ─── Fetch real translations from backend for every non-English language ──
+  // ─── Fetch real translations from backend ─────────────────────────────────
   const fetchTranslations = async (
     baseSlug: string,
     t: string,
@@ -104,34 +115,35 @@ export const BlogEditorPage: React.FC = () => {
     body: string,
     mt: string,
     md: string
-  ): Promise<BlogPost['translations']> => {
-    const translations: BlogPost['translations'] = {};
+  ): Promise<Translations> => {
+    const translations: Translations = {};
     const nonEnglish = SUPPORTED_LANGUAGES.filter(l => l.code !== 'en');
 
     for (const lang of nonEnglish) {
       const targetCode = LANG_CODE_MAP[lang.code] || lang.code;
       setTranslationProgress(`Translating to ${lang.name} ${lang.flag}…`);
+
       try {
         const data = await api.post('/translate', {
           texts: [t, ex, body, mt || t, md || ex],
           targetLang: targetCode,
         }) as { translations: string[] };
 
-        const [transTitle, transExcerpt, transContent, transMetaTitle, transMetaDesc] = data.translations;
+        const [tTitle, tExcerpt, tContent, tMetaTitle, tMetaDesc] = data.translations;
 
-        translations![lang.code] = {
-          title: transTitle || t,
+        translations[lang.code] = {
+          title: tTitle || t,
           slug: `${baseSlug}-${lang.code}`,
-          excerpt: transExcerpt || ex,
-          content: transContent
-            ? `<p>${transContent.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>`
-            : body,
-          metaTitle: transMetaTitle || mt || t,
-          metaDescription: transMetaDesc || md || ex,
+          excerpt: tExcerpt || ex,
+          content: tContent
+            ? `<p>${tContent.replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>')}</p>`
+            : `<p>${ex}</p>`,
+          metaTitle: tMetaTitle || mt || t,
+          metaDescription: tMetaDesc || md || ex,
         };
       } catch {
-        // On error, still add the language with English fallback so the flag shows
-        translations![lang.code] = {
+        // Fallback — store English content under this language key so the flag still appears
+        translations[lang.code] = {
           title: t,
           slug: `${baseSlug}-${lang.code}`,
           excerpt: ex,
@@ -146,59 +158,70 @@ export const BlogEditorPage: React.FC = () => {
     return translations;
   };
 
+  // ─── Publish / Update ─────────────────────────────────────────────────────
   const handleSubmit = async () => {
+    setSubmitError('');
     if (!title.trim() || !excerpt.trim() || !content.trim()) return;
     if (!currentUser) return;
 
     setIsSubmitting(true);
 
-    const postSlug = generateSlug(title);
+    try {
+      const postSlug = generateSlug(title);
 
-    const postData = {
-      title: title.trim(),
-      excerpt: excerpt.trim(),
-      content: content.trim(),
-      featuredImage: featuredImage.trim() || undefined,
-      tags,
-      authorId: currentUser.id,
-      authorName: currentUser.username,
-      authorAvatar: currentUser.avatar,
-      slug: postSlug,
-      metaTitle: metaTitle.trim() || title.trim(),
-      metaDescription: metaDescription.trim() || excerpt.trim(),
-    };
+      const postData = {
+        title: title.trim(),
+        excerpt: excerpt.trim(),
+        content: content.trim(),
+        featuredImage: featuredImage.trim() || undefined,
+        tags,
+        authorId: currentUser.id,
+        authorName: currentUser.username,
+        authorAvatar: currentUser.avatar,
+        slug: postSlug,
+        metaTitle: metaTitle.trim() || title.trim(),
+        metaDescription: metaDescription.trim() || excerpt.trim(),
+      };
 
-    let savedId: string;
+      let savedId: string;
 
-    if (isEditing && existingPost) {
-      // Update the post first (with autoTranslate=false to skip old hardcoded translations)
-      updatePost(existingPost.id, postData, false);
-      savedId = existingPost.id;
-    } else {
-      // Create post first (autoTranslate=false — we will set real translations below)
-      const newPost = createPost(postData, false);
-      savedId = newPost.id;
+      if (isEditing && existingPost) {
+        store.updatePost(existingPost.id, postData, false);
+        savedId = existingPost.id;
+      } else {
+        const newPost = store.createPost(postData, false);
+        savedId = newPost.id;
+      }
+
+      // Fetch real translations then save them directly
+      const translations = await fetchTranslations(
+        postSlug,
+        postData.title,
+        postData.excerpt,
+        postData.content,
+        postData.metaTitle,
+        postData.metaDescription
+      );
+
+      // Use setPostTranslations if available, otherwise fall back to updatePost
+      if (typeof store.setPostTranslations === 'function') {
+        store.setPostTranslations(savedId, translations);
+      } else {
+        // Fallback: patch the store via updatePost with a known workaround
+        store.updatePost(savedId, { translations } as any, false);
+      }
+
+      navigate(`/blog/${postSlug}`);
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    // Now fetch real translations from the backend and save them directly
-    const translations = await fetchTranslations(
-      postSlug,
-      postData.title,
-      postData.excerpt,
-      postData.content,
-      postData.metaTitle,
-      postData.metaDescription
-    );
-
-    setPostTranslations(savedId, translations);
-
-    setIsSubmitting(false);
-    navigate(`/blog/${postSlug}`);
   };
 
   const handleDelete = () => {
-    if (existingPost && confirm('Delete this post and all its translations? This cannot be undone.')) {
-      deletePostWithTranslations(existingPost.id);
+    if (existingPost && window.confirm('Delete this post and all its translations? This cannot be undone.')) {
+      store.deletePostWithTranslations(existingPost.id);
       navigate('/blog');
     }
   };
@@ -210,57 +233,54 @@ export const BlogEditorPage: React.FC = () => {
   };
 
   const handlePreview = () => {
-    const previewWindow = window.open('', '_blank');
-    if (previewWindow) {
-      previewWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>${title || 'Preview'} - Watch Trading Forums</title>
-          <style>
-            body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
-            h1 { font-size: 2.5em; margin-bottom: 0.5em; }
-            .meta { color: #666; margin-bottom: 2em; }
-            .excerpt { font-size: 1.2em; color: #444; font-style: italic; margin-bottom: 2em; padding: 20px; background: #f5f5f5; border-left: 4px solid #0066cc; }
-            img { max-width: 100%; height: auto; margin: 20px 0; }
-          </style>
-        </head>
-        <body>
-          <h1>${title || 'Untitled'}</h1>
-          <div class="meta">By ${currentUser?.username || 'Anonymous'}</div>
-          <div class="excerpt">${excerpt}</div>
-          ${featuredImage ? `<img src="${featuredImage}" alt="${title}">` : ''}
-          <div>${content}</div>
-        </body>
-        </html>
-      `);
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(`<!DOCTYPE html><html><head>
+        <title>${title || 'Preview'}</title>
+        <style>body{font-family:system-ui,sans-serif;max-width:800px;margin:0 auto;padding:40px 20px;line-height:1.6}
+        h1{font-size:2.5em}img{max-width:100%;height:auto;margin:20px 0}
+        .excerpt{font-size:1.1em;color:#555;font-style:italic;padding:16px;background:#f5f5f5;border-left:4px solid #0066cc;margin-bottom:24px}</style>
+        </head><body>
+        <h1>${title || 'Untitled'}</h1>
+        <div class="excerpt">${excerpt}</div>
+        ${featuredImage ? `<img src="${featuredImage}" alt="${title}">` : ''}
+        <div>${content}</div></body></html>`);
     }
   };
+
+  // Show loading spinner while auth initialises
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  if (!isOwner()) return null;
 
   const translationUrls = existingPost
     ? getTranslationUrls(existingPost.slug, existingPost.translations || {})
     : [];
-
-  if (!isOwner()) return null;
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="container mx-auto px-4 max-w-4xl">
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-8 flex-wrap gap-3">
           <Button variant="ghost" onClick={() => navigate('/blog')}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Blog
           </Button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {isEditing && (
-              <Button variant="destructive" onClick={handleDelete}>
+              <Button variant="destructive" size="sm" onClick={handleDelete}>
                 <Trash2 className="h-4 w-4 mr-2" />
                 Delete
               </Button>
             )}
-            <Button variant="outline" onClick={handlePreview}>
+            <Button variant="outline" size="sm" onClick={handlePreview}>
               <Eye className="h-4 w-4 mr-2" />
               Preview
             </Button>
@@ -272,7 +292,7 @@ export const BlogEditorPage: React.FC = () => {
               {isSubmitting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  {translationProgress || 'Saving…'}
+                  {translationProgress || 'Publishing…'}
                 </>
               ) : (
                 <>
@@ -284,9 +304,16 @@ export const BlogEditorPage: React.FC = () => {
           </div>
         </div>
 
-        <h1 className="text-3xl font-bold text-gray-900 mb-8">
-          {isEditing ? 'Edit Article' : 'Create New Article'}
+        <h1 className="text-3xl font-bold text-gray-900 mb-6">
+          {isEditing ? 'Edit Article' : 'New Article'}
         </h1>
+
+        {/* Error message */}
+        {submitError && (
+          <div className="mb-6 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-red-700 text-sm">
+            {submitError}
+          </div>
+        )}
 
         {/* Translation progress banner */}
         {isSubmitting && translationProgress && (
@@ -296,11 +323,11 @@ export const BlogEditorPage: React.FC = () => {
           </div>
         )}
 
-        {/* Translation URLs (editing an existing post) */}
+        {/* Existing translation URLs */}
         {isEditing && translationUrls.length > 1 && (
           <Card className="mb-6 border-green-200 bg-green-50">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-green-800">
+              <CardTitle className="flex items-center gap-2 text-green-800 text-base">
                 <Globe className="h-5 w-5" />
                 Translation URLs ({translationUrls.length - 1} languages)
               </CardTitle>
@@ -310,9 +337,9 @@ export const BlogEditorPage: React.FC = () => {
                 {translationUrls.map(({ lang, flag, name, url }) => (
                   <div key={lang} className="flex items-center gap-3 p-2 bg-white rounded-lg">
                     <span className="text-xl">{flag}</span>
-                    <span className="text-sm font-medium w-28">{name}</span>
+                    <span className="text-sm font-medium w-24 shrink-0">{name}</span>
                     <code className="text-xs bg-gray-100 px-2 py-1 rounded flex-1 truncate">{url}</code>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 shrink-0">
                       <Button variant="ghost" size="sm" onClick={() => handleCopyUrl(url)}>
                         {copiedUrl === url ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                       </Button>
@@ -335,7 +362,7 @@ export const BlogEditorPage: React.FC = () => {
             <CardContent>
               <Input
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                onChange={e => setTitle(e.target.value)}
                 placeholder="Enter a compelling title…"
                 className="text-lg"
               />
@@ -351,8 +378,8 @@ export const BlogEditorPage: React.FC = () => {
             <CardContent>
               <Textarea
                 value={excerpt}
-                onChange={(e) => setExcerpt(e.target.value)}
-                placeholder="A short summary shown in search results and previews…"
+                onChange={e => setExcerpt(e.target.value)}
+                placeholder="A short summary shown in previews and search results…"
                 rows={3}
               />
               <p className="text-sm text-gray-500 mt-2">
@@ -367,7 +394,7 @@ export const BlogEditorPage: React.FC = () => {
             <CardContent>
               <Input
                 value={featuredImage}
-                onChange={(e) => setFeaturedImage(e.target.value)}
+                onChange={e => setFeaturedImage(e.target.value)}
                 placeholder="https://example.com/image.jpg"
               />
               {featuredImage && (
@@ -375,7 +402,7 @@ export const BlogEditorPage: React.FC = () => {
                   src={featuredImage}
                   alt="Preview"
                   className="mt-4 max-h-48 rounded-lg object-cover"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
                 />
               )}
             </CardContent>
@@ -387,8 +414,8 @@ export const BlogEditorPage: React.FC = () => {
             <CardContent>
               <Textarea
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Write your article here. HTML tags are supported."
+                onChange={e => setContent(e.target.value)}
+                placeholder="Write your full article here. HTML is supported."
                 rows={20}
                 className="font-mono text-sm"
               />
@@ -403,7 +430,7 @@ export const BlogEditorPage: React.FC = () => {
             <CardHeader><CardTitle>Tags</CardTitle></CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-2 mb-4">
-                {tags.map((tag) => (
+                {tags.map(tag => (
                   <Badge key={tag} className="bg-blue-100 text-blue-700">
                     {tag}
                     <button onClick={() => handleRemoveTag(tag)} className="ml-2 hover:text-blue-900">
@@ -415,9 +442,9 @@ export const BlogEditorPage: React.FC = () => {
               <div className="flex gap-2">
                 <Input
                   value={newTag}
-                  onChange={(e) => setNewTag(e.target.value)}
+                  onChange={e => setNewTag(e.target.value)}
                   placeholder="Add a tag…"
-                  onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
+                  onKeyPress={e => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
                 />
                 <Button type="button" onClick={handleAddTag} variant="outline">
                   <Plus className="h-4 w-4" />
@@ -434,41 +461,41 @@ export const BlogEditorPage: React.FC = () => {
                 <Label>Meta Title (optional)</Label>
                 <Input
                   value={metaTitle}
-                  onChange={(e) => setMetaTitle(e.target.value)}
+                  onChange={e => setMetaTitle(e.target.value)}
                   placeholder={title || 'Custom title for search engines'}
                 />
-                <p className="text-sm text-gray-500 mt-1">Defaults to article title if left blank</p>
+                <p className="text-sm text-gray-500 mt-1">Defaults to article title if blank</p>
               </div>
               <div>
                 <Label>Meta Description (optional)</Label>
                 <Textarea
                   value={metaDescription}
-                  onChange={(e) => setMetaDescription(e.target.value)}
+                  onChange={e => setMetaDescription(e.target.value)}
                   placeholder={excerpt || 'Custom description for search engines'}
                   rows={2}
                 />
-                <p className="text-sm text-gray-500 mt-1">Defaults to excerpt if left blank</p>
+                <p className="text-sm text-gray-500 mt-1">Defaults to excerpt if blank</p>
               </div>
             </CardContent>
           </Card>
 
-          {/* Auto-Translation Info */}
+          {/* Auto-Translation info box */}
           <Card className="bg-blue-50 border-blue-200">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-blue-800">
+              <CardTitle className="flex items-center gap-2 text-blue-800 text-base">
                 <Globe className="h-5 w-5" />
                 Auto-translates into {SUPPORTED_LANGUAGES.length - 1} languages on publish
               </CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-blue-700 mb-3">
-                When you click Publish, the title, excerpt, and content are translated into every
-                supported language using the MyMemory API. Visitors clicking a country flag will
-                read the full article in their language.
+                The title, excerpt, and full article body are translated automatically
+                using MyMemory. Visitors clicking a country flag on your post will see
+                the complete article in their language.
               </p>
               <div className="flex flex-wrap gap-2">
                 {SUPPORTED_LANGUAGES.filter(l => l.code !== 'en').map(lang => (
-                  <Badge key={lang.code} variant="outline" className="bg-white">
+                  <Badge key={lang.code} variant="outline" className="bg-white text-xs">
                     {lang.flag} {lang.name}
                   </Badge>
                 ))}

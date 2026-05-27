@@ -308,9 +308,9 @@ export const useBlogStore = create<BlogState>()(
         const post = get().posts.find(post => {
           // Check English slug
           if (post.slug === slug) return true;
-          // Check translated slugs
+          // Check translated slugs — guard against null/undefined translation entries
           if (post.translations) {
-            return Object.values(post.translations).some(t => t.slug === slug);
+            return Object.values(post.translations).some(t => t != null && t.slug === slug);
           }
           return false;
         });
@@ -332,11 +332,9 @@ export const useBlogStore = create<BlogState>()(
       // ============================================
       getOriginalPostByAnySlug: (slug: string) => {
         return get().posts.find(post => {
-          // Check English slug
           if (post.slug === slug) return true;
-          // Check translated slugs
           if (post.translations) {
-            return Object.values(post.translations).some(t => t.slug === slug);
+            return Object.values(post.translations).some(t => t != null && t.slug === slug);
           }
           return false;
         });
@@ -350,7 +348,7 @@ export const useBlogStore = create<BlogState>()(
         const post = get().posts.find(post => {
           if (post.slug === slug) return true;
           if (post.translations) {
-            return Object.values(post.translations).some(t => t.slug === slug);
+            return Object.values(post.translations).some(t => t != null && t.slug === slug);
           }
           return false;
         });
@@ -424,15 +422,15 @@ export const useBlogStore = create<BlogState>()(
       getTranslatedPost: (post, lang) => {
         const translation = post.translations?.[lang];
         if (!translation) return post;
-        
+
         return {
           ...post,
-          title: translation.title,
-          slug: translation.slug,
-          excerpt: translation.excerpt,
-          content: translation.content,
-          metaTitle: translation.metaTitle,
-          metaDescription: translation.metaDescription,
+          title: translation.title || post.title,
+          slug: translation.slug || post.slug,
+          excerpt: translation.excerpt || post.excerpt,
+          content: translation.content || post.content,
+          metaTitle: translation.metaTitle || post.metaTitle,
+          metaDescription: translation.metaDescription || post.metaDescription,
         };
       },
 

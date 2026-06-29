@@ -1,15 +1,18 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const twofaRoutes = require('./routes/twofa.routes');
 
-const authRoutes = require('./routes/auth.routes');
-const usersRoutes = require('./routes/users.routes');
-const threadsRoutes = require('./routes/threads.routes');
-const messagesRoutes = require('./routes/messages.routes');
+const twofaRoutes          = require('./routes/twofa.routes');
+const authRoutes           = require('./routes/auth.routes');
+const usersRoutes          = require('./routes/users.routes');
+const threadsRoutes        = require('./routes/threads.routes');
+const messagesRoutes       = require('./routes/messages.routes');
 const profileUpdatesRoutes = require('./routes/profile-updates.routes');
-const uploadsRoutes = require('./routes/uploads.routes');
-const translateRoutes = require('./routes/translate.routes');
+const uploadsRoutes        = require('./routes/uploads.routes');
+const translateRoutes      = require('./routes/translate.routes');
+const shoutsRoutes         = require('./routes/shouts.routes');
+const notificationsRoutes  = require('./routes/notifications.routes');
+const blogRoutes           = require('./routes/blog.routes');
 
 const app = express();
 
@@ -19,14 +22,17 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(process.cwd(), 'backend', 'src', 'uploads')));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
-app.use('/api/auth', authRoutes);
-app.use('/api/users', usersRoutes);
-app.use('/api/threads', threadsRoutes);
-app.use('/api/messages', messagesRoutes);
+app.use('/api/auth',            authRoutes);
+app.use('/api/users',           usersRoutes);
+app.use('/api/threads',         threadsRoutes);
+app.use('/api/messages',        messagesRoutes);
 app.use('/api/profile-updates', profileUpdatesRoutes);
-app.use('/api/uploads', uploadsRoutes);
-app.use('/api/2fa', twofaRoutes);
-app.use('/api/translate', translateRoutes);
+app.use('/api/uploads',         uploadsRoutes);
+app.use('/api/2fa',             twofaRoutes);
+app.use('/api/translate',       translateRoutes);
+app.use('/api/shouts',          shoutsRoutes);
+app.use('/api/notifications',   notificationsRoutes);
+app.use('/api/blog',            blogRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

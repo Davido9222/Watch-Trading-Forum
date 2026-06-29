@@ -1,22 +1,27 @@
 // ============================================
 // BLOG STORE
 // SEO-optimized blog posts with multilingual support
+// Posts are stored in MongoDB via the backend API.
 // ============================================
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { BlogPost } from '@/types';
+import { api } from '@/lib/api';
 import { autoTranslateBlogPost, autoTranslateBlogPostAsync, getTranslationUrls } from '@/services/translationService';
 
 interface BlogState {
   posts: BlogPost[];
   searchQuery: string;
+  isLoading: boolean;
+
+  // Lifecycle
+  initialize: () => Promise<void>;
 
   // Actions
-  createPost: (post: Omit<BlogPost, 'id' | 'publishedAt' | 'updatedAt' | 'viewCount' | 'translations'>, autoTranslate?: boolean) => BlogPost;
-  updatePost: (id: string, updates: Partial<BlogPost>, autoTranslate?: boolean) => void;
-  deletePost: (id: string) => void;
-  deletePostWithTranslations: (id: string) => void;
+  createPost: (post: Omit<BlogPost, 'id' | 'publishedAt' | 'updatedAt' | 'viewCount' | 'translations'>, autoTranslate?: boolean) => Promise<BlogPost>;
+  updatePost: (id: string, updates: Partial<BlogPost>, autoTranslate?: boolean) => Promise<void>;
+  deletePost: (id: string) => Promise<void>;
+  deletePostWithTranslations: (id: string) => Promise<void>;
   getPostBySlug: (slug: string, lang?: string) => BlogPost | undefined;
   getPostById: (id: string, lang?: string) => BlogPost | undefined;
   getAllPosts: () => BlogPost[];
@@ -27,7 +32,7 @@ interface BlogState {
   // Translation helpers
   getTranslatedPost: (post: BlogPost, lang: string) => BlogPost;
   generateTranslatedSlug: (baseSlug: string, lang: string) => string;
-  // New functions for handling translated slugs
+  // Functions for handling translated slugs
   getOriginalPostByAnySlug: (slug: string) => BlogPost | undefined;
   getPostIdByAnySlug: (slug: string) => string | undefined;
   // Async real translation via MyMemory API
@@ -45,7 +50,8 @@ const generateSlug = (title: string): string => {
 };
 
 // ============================================
-// INITIAL BLOG POSTS - With auto-generated translations
+// INITIAL BLOG POSTS
+// Used as fallback while API loads or if API is empty on first deploy.
 // ============================================
 const createInitialPosts = (): BlogPost[] => {
   const posts = [
@@ -110,9 +116,9 @@ const createInitialPosts = (): BlogPost[] => {
         <p>The last digit often indicates the material:</p>
         <ul>
           <li>0 - Steel</li>
-          <li>1 - Everose gold & steel</li>
-          <li>3 - Yellow gold & steel</li>
-          <li>4 - White gold & steel</li>
+          <li>1 - Everose gold &amp; steel</li>
+          <li>3 - Yellow gold &amp; steel</li>
+          <li>4 - White gold &amp; steel</li>
           <li>6 - Platinum</li>
           <li>8 - Yellow gold</li>
           <li>9 - White gold</li>
@@ -168,8 +174,7 @@ const createInitialPosts = (): BlogPost[] => {
       viewCount: 2103,
     },
   ];
-  
-  // Add translations to each post
+
   return posts.map(post => ({
     ...post,
     translations: autoTranslateBlogPost(
@@ -187,295 +192,257 @@ const createInitialPosts = (): BlogPost[] => {
 // BLOG STORE
 // ============================================
 export const useBlogStore = create<BlogState>()(
-  persist(
-    (set, get) => ({
-      posts: createInitialPosts(),
-      searchQuery: '',
+  (set, get) => ({
+    posts: createInitialPosts(),
+    searchQuery: '',
+    isLoading: true,
 
-      // ============================================
-      // CREATE POST - Auto-generates translations for SEO
-      // ============================================
-      createPost: (postData, autoTranslate = true) => {
-        const postSlug = postData.slug || generateSlug(postData.title);
-        
-        // Auto-generate translations if enabled
-        const translations = autoTranslate 
-          ? autoTranslateBlogPost(
-              postData.title,
-              postData.excerpt,
-              postData.content,
-              postData.metaTitle,
-              postData.metaDescription,
-              postSlug
-            )
-          : {};
-        
-        const newPost: BlogPost = {
-          ...postData,
-          id: `blog-${Date.now()}`,
-          slug: postSlug,
-          publishedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          viewCount: 0,
-          translations,
-        };
-        set(state => ({ posts: [newPost, ...state.posts] }));
-        return newPost;
-      },
+    // ============================================
+    // INITIALIZE — fetch all posts from backend
+    // Falls back to hardcoded initial posts if the
+    // API is unreachable or the collection is empty.
+    // ============================================
+    initialize: async () => {
+      try {
+        const data: BlogPost[] = await api.get('/blog');
+        set({ posts: data.length > 0 ? data : createInitialPosts(), isLoading: false });
+      } catch {
+        set({ isLoading: false });
+      }
+    },
 
-      // ============================================
-      // UPDATE POST - Auto-regenerates translations when English changes
-      // ============================================
-      updatePost: (id, updates, autoTranslate = true) => {
-        set(state => ({
-          posts: state.posts.map(post => {
-            if (post.id !== id) return post;
-            
-            // Auto-regenerate translations if English content changed
-            let translations = post.translations || {};
-            if (autoTranslate && (
-              updates.title || 
-              updates.excerpt || 
-              updates.content || 
-              updates.metaTitle || 
-              updates.metaDescription
-            )) {
-              translations = autoTranslateBlogPost(
-                updates.title || post.title,
-                updates.excerpt || post.excerpt,
-                updates.content || post.content,
-                updates.metaTitle || post.metaTitle,
-                updates.metaDescription || post.metaDescription
-              );
-            }
-            
-            return { 
-              ...post, 
-              ...updates, 
-              updatedAt: new Date().toISOString(),
-              translations
-            };
-          }),
-        }));
-      },
+    // ============================================
+    // CREATE POST — persists to backend
+    // ============================================
+    createPost: async (postData, autoTranslate = true) => {
+      const postSlug = postData.slug || generateSlug(postData.title);
 
-      // ============================================
-      // DELETE POST
-      // ============================================
-      deletePost: (id) => {
-        set(state => ({
-          posts: state.posts.filter(post => post.id !== id),
-        }));
-      },
+      const translations = autoTranslate
+        ? autoTranslateBlogPost(
+            postData.title,
+            postData.excerpt,
+            postData.content,
+            postData.metaTitle,
+            postData.metaDescription,
+            postSlug
+          )
+        : {};
 
-      // ============================================
-      // DELETE POST WITH ALL TRANSLATIONS
-      // This deletes the main post and all its translations
-      // ============================================
-      deletePostWithTranslations: (id) => {
-        // Just delete the main post - translations are stored within it
-        set(state => ({
-          posts: state.posts.filter(post => post.id !== id),
-        }));
-      },
+      const payload = {
+        ...postData,
+        slug: postSlug,
+        viewCount: 0,
+        translations,
+      };
 
-      // ============================================
-      // GET TRANSLATION URLS FOR A POST
-      // Returns all language URLs for SEO
-      // ============================================
-      getTranslationUrls: (postId: string) => {
-        const post = get().posts.find(p => p.id === postId);
-        if (!post) return [];
-        return getTranslationUrls(post.slug, post.translations || {});
-      },
+      const newPost: BlogPost = await api.post('/blog', payload);
+      set(state => ({ posts: [newPost, ...state.posts] }));
+      return newPost;
+    },
 
-      // ============================================
-      // GET POST BY SLUG - Returns English version for blog list
-      // ============================================
-      getPostBySlug: (slug, lang = 'en') => {
-        const post = get().posts.find(post => {
-          // Check English slug
-          if (post.slug === slug) return true;
-          // Check translated slugs
-          if (post.translations) {
-            return Object.values(post.translations).some(t => t.slug === slug);
-          }
-          return false;
-        });
+    // ============================================
+    // UPDATE POST — persists to backend
+    // ============================================
+    updatePost: async (id, updates, autoTranslate = true) => {
+      const existing = get().posts.find(p => p.id === id);
 
-        if (!post) return undefined;
+      let translations = existing?.translations || {};
+      if (autoTranslate && (
+        updates.title ||
+        updates.excerpt ||
+        updates.content ||
+        updates.metaTitle ||
+        updates.metaDescription
+      )) {
+        translations = autoTranslateBlogPost(
+          updates.title || existing?.title || '',
+          updates.excerpt || existing?.excerpt || '',
+          updates.content || existing?.content || '',
+          updates.metaTitle || existing?.metaTitle,
+          updates.metaDescription || existing?.metaDescription
+        );
+      }
 
-        // Return translated version if language is not English
-        if (lang !== 'en' && post.translations?.[lang]) {
-          return get().getTranslatedPost(post, lang);
+      const updatedPost: BlogPost = await api.patch(
+        `/blog/${id}`,
+        { ...updates, translations }
+      );
+
+      set(state => ({
+        posts: state.posts.map(p => p.id === id ? { ...p, ...updatedPost } : p),
+      }));
+    },
+
+    // ============================================
+    // DELETE POST — removes from backend
+    // ============================================
+    deletePost: async (id) => {
+      await api.del(`/blog/${id}`);
+      set(state => ({ posts: state.posts.filter(p => p.id !== id) }));
+    },
+
+    // ============================================
+    // DELETE POST WITH TRANSLATIONS
+    // Translations are embedded in the post, so same as deletePost.
+    // ============================================
+    deletePostWithTranslations: async (id) => {
+      await api.del(`/blog/${id}`);
+      set(state => ({ posts: state.posts.filter(p => p.id !== id) }));
+    },
+
+    // ============================================
+    // GET POST BY SLUG
+    // ============================================
+    getPostBySlug: (slug, lang = 'en') => {
+      const post = get().posts.find(post => {
+        if (post.slug === slug) return true;
+        if (post.translations) {
+          return Object.values(post.translations).some((t: any) => t.slug === slug);
         }
+        return false;
+      });
 
-        return post;
-      },
+      if (!post) return undefined;
 
-      // ============================================
-      // GET ORIGINAL POST BY ANY SLUG
-      // Finds the original English post from any translated slug
-      // Used for edit page to handle translated URLs
-      // ============================================
-      getOriginalPostByAnySlug: (slug: string) => {
-        return get().posts.find(post => {
-          // Check English slug
-          if (post.slug === slug) return true;
-          // Check translated slugs
-          if (post.translations) {
-            return Object.values(post.translations).some(t => t.slug === slug);
-          }
-          return false;
-        });
-      },
+      if (lang !== 'en' && post.translations?.[lang]) {
+        return get().getTranslatedPost(post, lang);
+      }
 
-      // ============================================
-      // GET POST ID BY ANY SLUG
-      // Returns the post ID for any slug (English or translated)
-      // ============================================
-      getPostIdByAnySlug: (slug: string) => {
-        const post = get().posts.find(post => {
-          if (post.slug === slug) return true;
-          if (post.translations) {
-            return Object.values(post.translations).some(t => t.slug === slug);
-          }
-          return false;
-        });
-        return post?.id;
-      },
+      return post;
+    },
 
-      // ============================================
-      // GET POST BY ID - With optional translation
-      // ============================================
-      getPostById: (id, lang = 'en') => {
-        const post = get().posts.find(post => post.id === id);
-        
-        if (!post) return undefined;
-        
-        // Return translated version if language is not English
-        if (lang !== 'en' && post.translations?.[lang]) {
-          return get().getTranslatedPost(post, lang);
+    // ============================================
+    // GET ORIGINAL POST BY ANY SLUG
+    // ============================================
+    getOriginalPostByAnySlug: (slug: string) => {
+      return get().posts.find(post => {
+        if (post.slug === slug) return true;
+        if (post.translations) {
+          return Object.values(post.translations).some((t: any) => t.slug === slug);
         }
-        
-        return post;
-      },
+        return false;
+      });
+    },
 
-      // ============================================
-      // GET ALL POSTS - Always returns English (for blog list)
-      // ============================================
-      getAllPosts: () => {
-        return get().posts;
-      },
+    // ============================================
+    // GET POST ID BY ANY SLUG
+    // ============================================
+    getPostIdByAnySlug: (slug: string) => {
+      const post = get().posts.find(post => {
+        if (post.slug === slug) return true;
+        if (post.translations) {
+          return Object.values(post.translations).some((t: any) => t.slug === slug);
+        }
+        return false;
+      });
+      return post?.id;
+    },
 
-      // ============================================
-      // GET PUBLISHED POSTS - Always returns English (for blog list)
-      // ============================================
-      getPublishedPosts: () => {
-        return get().posts.filter(post => new Date(post.publishedAt) <= new Date());
-      },
+    // ============================================
+    // GET POST BY ID
+    // ============================================
+    getPostById: (id, lang = 'en') => {
+      const post = get().posts.find(post => post.id === id);
+      if (!post) return undefined;
+      if (lang !== 'en' && post.translations?.[lang]) {
+        return get().getTranslatedPost(post, lang);
+      }
+      return post;
+    },
 
-      // ============================================
-      // INCREMENT VIEW COUNT
-      // ============================================
-      incrementViews: (id) => {
+    // ============================================
+    // GET ALL POSTS
+    // ============================================
+    getAllPosts: () => {
+      return get().posts;
+    },
+
+    // ============================================
+    // GET PUBLISHED POSTS
+    // ============================================
+    getPublishedPosts: () => {
+      return get().posts.filter(post => new Date(post.publishedAt) <= new Date());
+    },
+
+    // ============================================
+    // INCREMENT VIEW COUNT — fire-and-forget to backend
+    // ============================================
+    incrementViews: (id) => {
+      api.post(`/blog/${id}/view`).catch(() => {});
+      set(state => ({
+        posts: state.posts.map(post =>
+          post.id === id ? { ...post, viewCount: post.viewCount + 1 } : post
+        ),
+      }));
+    },
+
+    // ============================================
+    // GET RELATED POSTS
+    // ============================================
+    getRelatedPosts: (postId, limit = 3) => {
+      const currentPost = get().getPostById(postId);
+      if (!currentPost) return [];
+      return get().posts
+        .filter(post => post.id !== postId)
+        .filter(post => post.tags.some(tag => currentPost.tags.includes(tag)))
+        .slice(0, limit);
+    },
+
+    // ============================================
+    // SET SEARCH QUERY
+    // ============================================
+    setSearchQuery: (query) => {
+      set({ searchQuery: query });
+    },
+
+    // ============================================
+    // GET TRANSLATED POST
+    // ============================================
+    getTranslatedPost: (post, lang) => {
+      const translation = post.translations?.[lang];
+      if (!translation) return post;
+      return {
+        ...post,
+        title: translation.title,
+        slug: translation.slug,
+        excerpt: translation.excerpt,
+        content: translation.content,
+        metaTitle: translation.metaTitle,
+        metaDescription: translation.metaDescription,
+      };
+    },
+
+    // ============================================
+    // GENERATE TRANSLATED SLUG
+    // ============================================
+    generateTranslatedSlug: (baseSlug, lang) => {
+      return `${baseSlug}-${lang}`;
+    },
+
+    // ============================================
+    // TRANSLATE POST — calls MyMemory API then saves
+    // translations to the backend.
+    // ============================================
+    translatePost: async (id: string) => {
+      const post = get().posts.find(p => p.id === id);
+      if (!post) return;
+      try {
+        const translations = await autoTranslateBlogPostAsync(
+          post.title,
+          post.excerpt,
+          post.content,
+          post.metaTitle,
+          post.metaDescription,
+          post.slug
+        );
         set(state => ({
-          posts: state.posts.map(post =>
-            post.id === id ? { ...post, viewCount: post.viewCount + 1 } : post
-          ),
+          posts: state.posts.map(p => p.id === id ? { ...p, translations } : p),
         }));
-      },
-
-      // ============================================
-      // GET RELATED POSTS
-      // ============================================
-      getRelatedPosts: (postId, limit = 3) => {
-        const currentPost = get().getPostById(postId);
-        if (!currentPost) return [];
-        
-        return get().posts
-          .filter(post => post.id !== postId)
-          .filter(post => post.tags.some(tag => currentPost.tags.includes(tag)))
-          .slice(0, limit);
-      },
-
-      // ============================================
-      // SET SEARCH QUERY
-      // ============================================
-      setSearchQuery: (query) => {
-        set({ searchQuery: query });
-      },
-
-      // ============================================
-      // GET TRANSLATED POST - Returns post with translated content
-      // ============================================
-      getTranslatedPost: (post, lang) => {
-        const translation = post.translations?.[lang];
-        if (!translation) return post;
-        
-        return {
-          ...post,
-          title: translation.title,
-          slug: translation.slug,
-          excerpt: translation.excerpt,
-          content: translation.content,
-          metaTitle: translation.metaTitle,
-          metaDescription: translation.metaDescription,
-        };
-      },
-
-      // ============================================
-      // GENERATE TRANSLATED SLUG
-      // ============================================
-      generateTranslatedSlug: (baseSlug, lang) => {
-        return `${baseSlug}-${lang}`;
-      },
-
-      // ============================================
-      // TRANSLATE POST — Calls MyMemory API in background
-      // Call after createPost/updatePost to get real translations.
-      // The post is immediately visible in English; translations
-      // are saved to the store when the API calls complete.
-      // ============================================
-      translatePost: async (id: string) => {
-        const post = get().posts.find(p => p.id === id);
-        if (!post) return;
-        try {
-          const translations = await autoTranslateBlogPostAsync(
-            post.title,
-            post.excerpt,
-            post.content,
-            post.metaTitle,
-            post.metaDescription,
-            post.slug
-          );
-          set(state => ({
-            posts: state.posts.map(p => p.id === id ? { ...p, translations } : p),
-          }));
-        } catch (err) {
-          console.error('Background translation failed:', err);
-        }
-      },
-
-    }),
-    {
-      name: 'watch-forum-blog',
-      version: 3, // Version bump for full translations
-      migrate: (persistedState: any, version) => {
-        if (version < 3) {
-          // Generate translations for existing posts
-          return {
-            ...persistedState,
-            posts: persistedState.posts.map((post: BlogPost) => ({
-              ...post,
-              translations: post.translations && Object.keys(post.translations).length > 0 
-                ? post.translations 
-                : autoTranslateBlogPost(post.title, post.excerpt, post.content, post.metaTitle, post.metaDescription, post.slug),
-            })),
-          };
-        }
-        return persistedState;
-      },
-    }
-  )
+        // Persist translations to backend (fire-and-forget, don't block UI)
+        api.patch(`/blog/${id}`, { translations }).catch(() => {});
+      } catch (err) {
+        console.error('Background translation failed:', err);
+      }
+    },
+  })
 );

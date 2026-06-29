@@ -26,6 +26,7 @@ import { FallingWatchesEasterEgg } from '@/components/FallingWatchesEasterEgg';
 import { useAuthStore } from '@/stores/authStore';
 import { useForumStore } from '@/stores/forumStore';
 import { useMessageStore } from '@/stores/messageStore';
+import { useBlogStore } from '@/stores/blogStore';
 
 // ============================================
 // PROTECTED ROUTE COMPONENT
@@ -81,15 +82,17 @@ const OwnerRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // MAIN APP
 // ============================================
 function App() {
-  const initializeAuth = useAuthStore((s) => s.initialize);
-  const initializeForum = useForumStore((s) => s.initialize);
+  const initializeAuth     = useAuthStore((s) => s.initialize);
+  const initializeForum    = useForumStore((s) => s.initialize);
   const initializeMessages = useMessageStore((s) => s.initialize);
+  const initializeBlog     = useBlogStore((s) => s.initialize);
 
   useEffect(() => {
     initializeAuth();
     initializeForum();
     initializeMessages();
-  }, [initializeAuth, initializeForum, initializeMessages]);
+    initializeBlog();
+  }, [initializeAuth, initializeForum, initializeMessages, initializeBlog]);
 
   return (
     <Router>

@@ -6,6 +6,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Helmet } from 'react-helmet-async';
 import { useBlogStore } from '@/stores/blogStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useLanguageStore, SUPPORTED_LANGUAGES } from '@/stores/languageStore';
@@ -53,7 +54,6 @@ export const BlogPostPage: React.FC = () => {
     if (displayLang === 'en' || !rawPost) return false;
     const t = rawPost.translations?.[displayLang];
     if (!t) return true;
-    // Placeholder = title unchanged from English (fallback content)
     return t.title === rawPost.title;
   }, [rawPost, displayLang]);
 
@@ -138,15 +138,82 @@ export const BlogPostPage: React.FC = () => {
   const relatedPosts = getRelatedPosts();
   const availableTranslations = getAvailableTranslations();
 
+  // ============================================================
+  // SEO — pick translated meta values when on a language URL.
+  // Falls back through: translated meta > translated title/excerpt > English meta > English title/excerpt
+  // ============================================================
+  const translation = displayLang !== 'en' ? rawPost?.translations?.[displayLang] : undefined;
+
+  const seoTitle       = translation?.metaTitle       || translation?.title       || post.metaTitle       || post.title;
+  const seoDescription = translation?.metaDescription || translation?.excerpt     || post.metaDescription || post.excerpt;
+  const seoImage       = post.featuredImage || '';
+
+  // Canonical always points to the English version so Google consolidates link equity
+  const canonicalUrl = `https://watchtradingforums.com/blog/${rawPost?.slug ?? post.slug}`;
+  const currentUrl   = typeof window !== 'undefined' ? window.location.href : canonicalUrl;
+
+  // hreflang alternates: English + every translated language + x-default
+  const hreflangLinks = [
+    { hLang: 'en',        href: canonicalUrl },
+    ...availableTranslations.map((code) => {
+      const tSlug = rawPost?.translations?.[code]?.slug ?? rawPost?.slug ?? post.slug;
+      return { hLang: code, href: `https://watchtradingforums.com/blog/${code}/${tSlug}` };
+    }),
+    { hLang: 'x-default', href: canonicalUrl },
+  ];
+
   return (
     <div className="min-h-screen bg-gray-50" key={displayLang}>
-      {/* Translating banner — shown when real translation is being fetched */}
+
+      {/* ====================================================
+          SEO HEAD — injected into <head> by react-helmet-async
+          Google reads these; the browser tab shows <title>.
+          ==================================================== */}
+      <Helmet>
+        {/* Browser tab + Google headline */}
+        <title>{seoTitle} | Watch Trading Forums</title>
+
+        {/* Google search snippet description */}
+        <meta name="description" content={seoDescription} />
+
+        {/* Canonical — tells Google which URL is the master copy */}
+        <link rel="canonical" href={canonicalUrl} />
+
+        {/* hreflang — tells Google about every language version */}
+        {hreflangLinks.map(({ hLang, href }) => (
+          <link key={hLang} rel="alternate" hrefLang={hLang} href={href} />
+        ))}
+
+        {/* Open Graph (Facebook / WhatsApp / Discord link previews) */}
+        <meta property="og:type"        content="article" />
+        <meta property="og:title"       content={seoTitle} />
+        <meta property="og:description" content={seoDescription} />
+        <meta property="og:url"         content={currentUrl} />
+        {seoImage && <meta property="og:image" content={seoImage} />}
+        <meta property="og:site_name"   content="Watch Trading Forums" />
+
+        {/* Twitter / X card */}
+        <meta name="twitter:card"        content="summary_large_image" />
+        <meta name="twitter:title"       content={seoTitle} />
+        <meta name="twitter:description" content={seoDescription} />
+        {seoImage && <meta name="twitter:image" content={seoImage} />}
+
+        {/* Article structured data */}
+        <meta property="article:published_time" content={post.publishedAt} />
+        <meta property="article:author"         content={post.authorName} />
+        {post.tags.map((tag) => (
+          <meta key={tag} property="article:tag" content={tag} />
+        ))}
+      </Helmet>
+
+      {/* Translating banner */}
       {isTranslating && displayLang !== 'en' && (
         <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 text-center text-sm text-blue-700 flex items-center justify-center gap-2">
           <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full" />
           Translating this article — please wait a moment…
         </div>
       )}
+
       {/* Header */}
       <div className="bg-white border-b border-gray-200">
         <div className="container mx-auto px-4 py-4">

@@ -40,6 +40,7 @@ export const BlogEditorPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Redirect if not owner
   useEffect(() => {
@@ -87,6 +88,7 @@ export const BlogEditorPage: React.FC = () => {
     if (!currentUser) return;
 
     setIsSubmitting(true);
+    setError(null);
 
     const postData = {
       title: title.trim(),
@@ -102,27 +104,36 @@ export const BlogEditorPage: React.FC = () => {
       metaDescription: metaDescription.trim() || excerpt.trim(),
     };
 
-    if (isEditing && existingPost) {
-      updatePost(existingPost.id, postData);
+    try {
+      if (isEditing && existingPost) {
+        await updatePost(existingPost.id, postData);
+        setIsSubmitting(false);
+        // Kick off real translation in the background (fire and forget)
+        setIsTranslating(true);
+        translatePost(existingPost.id).finally(() => setIsTranslating(false));
+        navigate(`/blog/${postData.slug}`);
+      } else {
+        const newPost = await createPost(postData);
+        setIsSubmitting(false);
+        // Kick off real translation in the background (fire and forget)
+        setIsTranslating(true);
+        translatePost(newPost.id).finally(() => setIsTranslating(false));
+        navigate(`/blog/${newPost.slug}`);
+      }
+    } catch (err: unknown) {
       setIsSubmitting(false);
-      // Kick off real translation in the background (fire and forget)
-      setIsTranslating(true);
-      translatePost(existingPost.id).finally(() => setIsTranslating(false));
-      navigate(`/blog/${postData.slug}`);
-    } else {
-      const newPost = createPost(postData);
-      setIsSubmitting(false);
-      // Kick off real translation in the background (fire and forget)
-      setIsTranslating(true);
-      translatePost(newPost.id).finally(() => setIsTranslating(false));
-      navigate(`/blog/${newPost.slug}`);
+      setError(err instanceof Error ? err.message : 'Failed to save post. Please try again.');
     }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (existingPost && confirm('Are you sure you want to delete this post and all its translations? This cannot be undone.')) {
-      deletePostWithTranslations(existingPost.id);
-      navigate('/blog');
+      try {
+        await deletePostWithTranslations(existingPost.id);
+        navigate('/blog');
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Failed to delete post. Please try again.');
+      }
     }
   };
 
@@ -205,6 +216,12 @@ export const BlogEditorPage: React.FC = () => {
             )}
           </div>
         </div>
+
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {error}
+          </div>
+        )}
 
         <h1 className="text-3xl font-bold text-gray-900 mb-8">
           {isEditing ? 'Edit Article' : 'Create New Article'}

@@ -34,11 +34,7 @@ import { useBlogStore } from '@/stores/blogStore';
 // ============================================
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated } = useAuthStore();
-  
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-  
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
@@ -48,15 +44,8 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 // ============================================
 const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, canModerate } = useAuthStore();
-  
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-  
-  if (!canModerate()) {
-    return <Navigate to="/" replace />;
-  }
-  
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!canModerate()) return <Navigate to="/" replace />;
   return <>{children}</>;
 };
 
@@ -66,15 +55,8 @@ const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // ============================================
 const OwnerRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, isOwner } = useAuthStore();
-  
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-  
-  if (!isOwner()) {
-    return <Navigate to="/" replace />;
-  }
-  
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!isOwner()) return <Navigate to="/" replace />;
   return <>{children}</>;
 };
 
@@ -82,10 +64,10 @@ const OwnerRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // MAIN APP
 // ============================================
 function App() {
-  const initializeAuth     = useAuthStore((s) => s.initialize);
-  const initializeForum    = useForumStore((s) => s.initialize);
+  const initializeAuth = useAuthStore((s) => s.initialize);
+  const initializeForum = useForumStore((s) => s.initialize);
   const initializeMessages = useMessageStore((s) => s.initialize);
-  const initializeBlog     = useBlogStore((s) => s.initialize);
+  const initializeBlog = useBlogStore((s) => s.initialize);
 
   useEffect(() => {
     initializeAuth();
@@ -99,7 +81,7 @@ function App() {
       <div className="min-h-screen bg-gray-50">
         {/* Easter Egg - Falling Watches */}
         <FallingWatchesEasterEgg />
-        
+
         <Navigation />
         <main>
           <Routes>
@@ -114,79 +96,46 @@ function App() {
             <Route path="/members" element={<MembersPage />} />
             <Route path="/shoutbox" element={<ShoutboxPage />} />
             <Route path="/play-flappy-watch" element={<FlappyWatchPage />} />
+
+            {/* Blog — single URL per post, language switching via store */}
             <Route path="/blog" element={<BlogListPage />} />
             <Route path="/blog/:slug" element={<BlogPostPage />} />
-            {/* Multilingual blog routes for SEO */}
-            <Route path="/blog/:lang/:slug" element={<BlogPostPage />} />
-            
+
             {/* Protected Routes */}
-            <Route 
-              path="/new-thread/:sectionSlug" 
-              element={
-                <ProtectedRoute>
-                  <NewThreadPage />
-                </ProtectedRoute>
-              } 
+            <Route
+              path="/new-thread/:sectionSlug"
+              element={<ProtectedRoute><NewThreadPage /></ProtectedRoute>}
             />
-            <Route 
-              path="/messages" 
-              element={
-                <ProtectedRoute>
-                  <MessagesPage />
-                </ProtectedRoute>
-              } 
+            <Route
+              path="/messages"
+              element={<ProtectedRoute><MessagesPage /></ProtectedRoute>}
             />
-            <Route 
-              path="/messages/:username" 
-              element={
-                <ProtectedRoute>
-                  <MessagesPage />
-                </ProtectedRoute>
-              } 
+            <Route
+              path="/messages/:username"
+              element={<ProtectedRoute><MessagesPage /></ProtectedRoute>}
             />
-            
+
             {/* Admin Routes */}
-            <Route 
-              path="/admin" 
-              element={
-                <AdminRoute>
-                  <AdminPanel />
-                </AdminRoute>
-              } 
+            <Route
+              path="/admin"
+              element={<AdminRoute><AdminPanel /></AdminRoute>}
             />
-            
-            {/* Owner Routes - Blog Management */}
-            <Route 
-              path="/blog/new" 
-              element={
-                <OwnerRoute>
-                  <BlogEditorPage />
-                </OwnerRoute>
-              } 
+
+            {/* Owner Routes — Blog Management */}
+            <Route
+              path="/blog/new"
+              element={<OwnerRoute><BlogEditorPage /></OwnerRoute>}
             />
-            <Route 
-              path="/blog/edit/:slug" 
-              element={
-                <OwnerRoute>
-                  <BlogEditorPage />
-                </OwnerRoute>
-              } 
+            <Route
+              path="/blog/edit/:slug"
+              element={<OwnerRoute><BlogEditorPage /></OwnerRoute>}
             />
-            {/* Handle language-prefixed edit URLs */}
-            <Route 
-              path="/blog/edit/:lang/:slug" 
-              element={
-                <OwnerRoute>
-                  <BlogEditorPage />
-                </OwnerRoute>
-              } 
-            />
-            
+
             {/* 404 Redirect */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-        
+
         {/* Footer */}
         <footer className="bg-white border-t border-gray-200 py-8 mt-auto">
           <div className="container mx-auto px-4">

@@ -1,12 +1,13 @@
 // ============================================
 // BLOG POST PAGE
-// Individual blog post with multilingual SEO support
-// key={displayLang} forces re-mount when language changes so translation is applied
+// Individual blog post with multilingual support.
+// Language switching happens on the SAME URL — flags call setLanguage()
+// from the language store instead of navigating to a separate URL.
+// This removes duplicate pages and keeps a single canonical URL per post.
 // ============================================
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { Helmet } from 'react-helmet-async';
 import { useBlogStore } from '@/stores/blogStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useLanguageStore, SUPPORTED_LANGUAGES } from '@/stores/languageStore';
@@ -24,24 +25,25 @@ import {
 } from '@/components/ui/dialog';
 
 export const BlogPostPage: React.FC = () => {
-  const { slug, lang } = useParams<{ slug: string; lang?: string }>();
+  // Only slug — no lang param. Language comes from the language store.
+  const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
-  const { posts, getPostBySlug, getTranslatedPost, incrementViews, deletePost, translatePost } = useBlogStore();
+  const { posts, getPostBySlug, getTranslatedPost, incrementViews, deletePost } = useBlogStore();
   const { isOwner } = useAuthStore();
-  const { currentLanguage } = useLanguageStore();
+  const { currentLanguage, setLanguage } = useLanguageStore();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [isTranslating, setIsTranslating] = useState(false);
 
-  // Determine which language to display: URL param > user preference > English
-  const displayLang = lang || currentLanguage || 'en';
+  // Which language to render: user's stored preference (default English)
+  const displayLang = currentLanguage || 'en';
 
-  // Find the raw post (base/English) and the translated version
+  // Find the base (English) post by slug
   const rawPost = useMemo(() => {
     if (!slug) return undefined;
-    return getPostBySlug(slug, 'en') ?? getPostBySlug(slug, displayLang);
-  }, [slug, displayLang, posts]);
+    return getPostBySlug(slug);
+  }, [slug, posts]);
 
+  // Apply translation overlay for the current language
   const post = useMemo(() => {
     if (!rawPost) return undefined;
     return typeof getTranslatedPost === 'function'
@@ -49,21 +51,16 @@ export const BlogPostPage: React.FC = () => {
       : rawPost;
   }, [rawPost, displayLang, posts]);
 
-  // Detect placeholder translation: same title as English in a non-English context
-  const hasPlaceholderTranslation = useMemo(() => {
-    if (displayLang === 'en' || !rawPost) return false;
-    const t = rawPost.translations?.[displayLang];
-    if (!t) return true;
-    return t.title === rawPost.title;
-  }, [rawPost, displayLang]);
+  // List of language codes that have a real translation stored
+  const availableTranslations = useMemo(() => {
+    if (!rawPost?.translations) return [];
+    return Object.keys(rawPost.translations).filter(code =>
+      SUPPORTED_LANGUAGES.some(l => l.code === code),
+    );
+  }, [rawPost]);
 
-  // Auto-trigger real translation for posts with placeholder translations
-  useEffect(() => {
-    if (hasPlaceholderTranslation && rawPost && !isTranslating) {
-      setIsTranslating(true);
-      translatePost(rawPost.id).finally(() => setIsTranslating(false));
-    }
-  }, [rawPost?.id, hasPlaceholderTranslation]);
+  // True when the selected language has no translation yet
+  const translationPending = displayLang !== 'en' && !availableTranslations.includes(displayLang);
 
   useEffect(() => {
     const timer = setTimeout(() => setIsLoading(false), 300);
@@ -71,11 +68,11 @@ export const BlogPostPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (post) incrementViews(post.id);
-  }, [post?.id]);
+    if (rawPost) incrementViews(rawPost.id);
+  }, [rawPost?.id]);
 
   const handleDelete = () => {
-    if (post) { deletePost(post.id); navigate('/blog'); }
+    if (rawPost) { deletePost(rawPost.id); navigate('/blog'); }
   };
 
   const handleShare = async () => {
@@ -90,7 +87,7 @@ export const BlogPostPage: React.FC = () => {
     const localeMap: Record<string, string> = {
       en: 'en-US', zh: 'zh-CN', es: 'es-ES', fr: 'fr-FR',
       de: 'de-DE', ja: 'ja-JP', ru: 'ru-RU', nl: 'nl-NL',
-      pt: 'pt-PT', ar: 'ar-SA',
+      pt: 'pt-PT', ar: 'ar-SA', hi: 'hi-IN', id: 'id-ID',
     };
     return new Date(dateString).toLocaleDateString(localeMap[displayLang] || 'en-US', {
       year: 'numeric', month: 'long', day: 'numeric',
@@ -100,24 +97,20 @@ export const BlogPostPage: React.FC = () => {
   const estimateReadTime = (content: string) =>
     Math.ceil(content.split(/\s+/).length / 200);
 
-  const getRelatedPosts = () => {
-    if (!post) return [];
+  const relatedPosts = useMemo(() => {
+    if (!rawPost) return [];
     return posts
-      .filter(p => p.id !== post.id && p.tags.some(tag => post.tags.includes(tag)))
+      .filter(p => p.id !== rawPost.id && p.tags.some(t => rawPost.tags.includes(t)))
       .slice(0, 3);
-  };
+  }, [rawPost, posts]);
 
-  const getAvailableTranslations = () => {
-    if (!post?.translations) return [];
-    return Object.keys(post.translations).filter(code => SUPPORTED_LANGUAGES.some(l => l.code === code));
-  };
-
+  // ─── Loading ────────────────────────────────────────────────────────────────
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
-          <p className="text-gray-600">Loading article...</p>
+          <p className="text-gray-600">Loading article…</p>
         </div>
       </div>
     );
@@ -135,86 +128,19 @@ export const BlogPostPage: React.FC = () => {
     );
   }
 
-  const relatedPosts = getRelatedPosts();
-  const availableTranslations = getAvailableTranslations();
-
-  // ============================================================
-  // SEO — pick translated meta values when on a language URL.
-  // Falls back through: translated meta > translated title/excerpt > English meta > English title/excerpt
-  // ============================================================
-  const translation = displayLang !== 'en' ? rawPost?.translations?.[displayLang] : undefined;
-
-  const seoTitle       = translation?.metaTitle       || translation?.title       || post.metaTitle       || post.title;
-  const seoDescription = translation?.metaDescription || translation?.excerpt     || post.metaDescription || post.excerpt;
-  const seoImage       = post.featuredImage || '';
-
-  // Canonical always points to the English version so Google consolidates link equity
-  const canonicalUrl = `https://watchtradingforums.com/blog/${rawPost?.slug ?? post.slug}`;
-  const currentUrl   = typeof window !== 'undefined' ? window.location.href : canonicalUrl;
-
-  // hreflang alternates: English + every translated language + x-default
-  const hreflangLinks = [
-    { hLang: 'en',        href: canonicalUrl },
-    ...availableTranslations.map((code) => {
-      const tSlug = rawPost?.translations?.[code]?.slug ?? rawPost?.slug ?? post.slug;
-      return { hLang: code, href: `https://watchtradingforums.com/blog/${code}/${tSlug}` };
-    }),
-    { hLang: 'x-default', href: canonicalUrl },
-  ];
-
+  // ─── Render ─────────────────────────────────────────────────────────────────
   return (
+    // key={displayLang} forces re-mount so scroll position resets on language switch
     <div className="min-h-screen bg-gray-50" key={displayLang}>
 
-      {/* ====================================================
-          SEO HEAD — injected into <head> by react-helmet-async
-          Google reads these; the browser tab shows <title>.
-          ==================================================== */}
-      <Helmet>
-        {/* Browser tab + Google headline */}
-        <title>{seoTitle} | Watch Trading Forums</title>
-
-        {/* Google search snippet description */}
-        <meta name="description" content={seoDescription} />
-
-        {/* Canonical — tells Google which URL is the master copy */}
-        <link rel="canonical" href={canonicalUrl} />
-
-        {/* hreflang — tells Google about every language version */}
-        {hreflangLinks.map(({ hLang, href }) => (
-          <link key={hLang} rel="alternate" hrefLang={hLang} href={href} />
-        ))}
-
-        {/* Open Graph (Facebook / WhatsApp / Discord link previews) */}
-        <meta property="og:type"        content="article" />
-        <meta property="og:title"       content={seoTitle} />
-        <meta property="og:description" content={seoDescription} />
-        <meta property="og:url"         content={currentUrl} />
-        {seoImage && <meta property="og:image" content={seoImage} />}
-        <meta property="og:site_name"   content="Watch Trading Forums" />
-
-        {/* Twitter / X card */}
-        <meta name="twitter:card"        content="summary_large_image" />
-        <meta name="twitter:title"       content={seoTitle} />
-        <meta name="twitter:description" content={seoDescription} />
-        {seoImage && <meta name="twitter:image" content={seoImage} />}
-
-        {/* Article structured data */}
-        <meta property="article:published_time" content={post.publishedAt} />
-        <meta property="article:author"         content={post.authorName} />
-        {post.tags.map((tag) => (
-          <meta key={tag} property="article:tag" content={tag} />
-        ))}
-      </Helmet>
-
-      {/* Translating banner */}
-      {isTranslating && displayLang !== 'en' && (
-        <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 text-center text-sm text-blue-700 flex items-center justify-center gap-2">
-          <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full" />
-          Translating this article — please wait a moment…
+      {/* "Translation pending" banner */}
+      {translationPending && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-sm text-amber-700">
+          🌍 Translation for this language is being generated — showing English in the meantime.
         </div>
       )}
 
-      {/* Header */}
+      {/* Header bar */}
       <div className="bg-white border-b border-gray-200">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -225,31 +151,38 @@ export const BlogPostPage: React.FC = () => {
               </Button>
             </Link>
 
-            {/* Language Selector */}
+            {/* Language Selector — same URL, changes store language */}
             {availableTranslations.length > 0 && (
               <div className="flex items-center gap-2">
                 <Globe className="h-4 w-4 text-gray-500" />
                 <span className="text-sm text-gray-500">Read in:</span>
-                <div className="flex gap-1">
-                  <Link
-                    to={`/blog/${post.slug}`}
-                    className={`px-2 py-1 text-sm rounded ${!lang ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'}`}
+                <div className="flex gap-1 flex-wrap">
+                  {/* English flag */}
+                  <button
+                    onClick={() => setLanguage('en')}
+                    className={`px-2 py-1 text-sm rounded transition-colors ${
+                      displayLang === 'en' ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+                    }`}
                     title="English"
                   >
                     🇬🇧
-                  </Link>
+                  </button>
+
+                  {/* Translated language flags */}
                   {availableTranslations.map((code) => {
                     const langInfo = SUPPORTED_LANGUAGES.find(l => l.code === code);
                     if (!langInfo) return null;
                     return (
-                      <Link
+                      <button
                         key={code}
-                        to={`/blog/${code}/${post.translations?.[code]?.slug || post.slug}`}
-                        className={`px-2 py-1 text-sm rounded ${lang === code ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'}`}
+                        onClick={() => setLanguage(code as any)}
+                        className={`px-2 py-1 text-sm rounded transition-colors ${
+                          displayLang === code ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+                        }`}
                         title={langInfo.name}
                       >
                         {langInfo.flag}
-                      </Link>
+                      </button>
                     );
                   })}
                 </div>
@@ -263,13 +196,18 @@ export const BlogPostPage: React.FC = () => {
               </Button>
               {isOwner() && (
                 <>
-                  <Link to={`/blog/edit/${post.slug}`}>
+                  <Link to={`/blog/edit/${rawPost?.slug}`}>
                     <Button variant="ghost" size="sm">
                       <Edit className="h-4 w-4 mr-2" />
                       Edit
                     </Button>
                   </Link>
-                  <Button variant="ghost" size="sm" className="text-red-600" onClick={() => setDeleteDialogOpen(true)}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-red-600"
+                    onClick={() => setDeleteDialogOpen(true)}
+                  >
                     <Trash2 className="h-4 w-4 mr-2" />
                     Delete
                   </Button>
@@ -287,9 +225,10 @@ export const BlogPostPage: React.FC = () => {
         </div>
       )}
 
-      {/* Article */}
+      {/* Article body */}
       <article className="container mx-auto px-4 py-12">
         <div className="max-w-4xl mx-auto">
+          {/* Tags */}
           <div className="flex flex-wrap gap-2 mb-6">
             {post.tags.map((tag, i) => (
               <Badge key={i} className="bg-blue-100 text-blue-700 hover:bg-blue-200">
@@ -301,7 +240,10 @@ export const BlogPostPage: React.FC = () => {
           <h1 className="text-3xl md:text-5xl font-bold text-gray-900 mb-8">{post.title}</h1>
 
           <div className="flex flex-wrap items-center gap-6 pb-8 mb-8 border-b border-gray-200">
-            <Link to={`/profile/${post.authorName}`} className="flex items-center gap-3 hover:bg-gray-100 rounded-lg p-2 -m-2 transition-colors">
+            <Link
+              to={`/profile/${post.authorName}`}
+              className="flex items-center gap-3 hover:bg-gray-100 rounded-lg p-2 -m-2 transition-colors"
+            >
               <Avatar className="h-12 w-12">
                 <AvatarImage src={post.authorAvatar} />
                 <AvatarFallback>{post.authorName.slice(0, 2).toUpperCase()}</AvatarFallback>
@@ -323,12 +265,13 @@ export const BlogPostPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Content */}
           <div
             className="prose prose-lg max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-a:text-blue-600 prose-strong:text-gray-900"
             dangerouslySetInnerHTML={{ __html: post.content }}
           />
 
-          {/* Author Bio */}
+          {/* Author bio */}
           <div className="mt-16 pt-8 border-t border-gray-200">
             <div className="bg-gray-50 rounded-xl p-6">
               <h3 className="text-lg font-bold text-gray-900 mb-4">About the Author</h3>
@@ -339,11 +282,14 @@ export const BlogPostPage: React.FC = () => {
                 </Avatar>
                 <div>
                   <Link to={`/profile/${post.authorName}`}>
-                    <p className="font-bold text-gray-900 hover:text-blue-600 transition-colors">{post.authorName}</p>
+                    <p className="font-bold text-gray-900 hover:text-blue-600 transition-colors">
+                      {post.authorName}
+                    </p>
                   </Link>
                   <p className="text-gray-600 mt-1">
-                    Experienced watch trader and collector contributing to the Watch Trading Forums community.
-                    Sharing insights on luxury timepieces, market trends, and trading strategies.
+                    Experienced watch trader and collector contributing to the Watch Trading
+                    Forums community. Sharing insights on luxury timepieces, market trends,
+                    and trading strategies.
                   </p>
                 </div>
               </div>
@@ -355,12 +301,16 @@ export const BlogPostPage: React.FC = () => {
             <div className="mt-16">
               <h3 className="text-2xl font-bold text-gray-900 mb-6">Related Articles</h3>
               <div className="grid md:grid-cols-3 gap-6">
-                {relatedPosts.map((relatedPost) => (
-                  <Link key={relatedPost.id} to={lang ? `/blog/${lang}/${relatedPost.slug}` : `/blog/${relatedPost.slug}`}>
+                {relatedPosts.map((rp) => (
+                  <Link key={rp.id} to={`/blog/${rp.slug}`}>
                     <article className="bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow">
-                      {relatedPost.featuredImage ? (
+                      {rp.featuredImage ? (
                         <div className="h-32 overflow-hidden">
-                          <img src={relatedPost.featuredImage} alt={relatedPost.title} className="w-full h-full object-cover hover:scale-105 transition-transform" />
+                          <img
+                            src={rp.featuredImage}
+                            alt={rp.title}
+                            className="w-full h-full object-cover hover:scale-105 transition-transform"
+                          />
                         </div>
                       ) : (
                         <div className="h-32 bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center">
@@ -368,8 +318,10 @@ export const BlogPostPage: React.FC = () => {
                         </div>
                       )}
                       <div className="p-4">
-                        <h4 className="font-bold text-gray-900 hover:text-blue-600 transition-colors line-clamp-2">{relatedPost.title}</h4>
-                        <p className="text-sm text-gray-500 mt-2">{formatDate(relatedPost.publishedAt)}</p>
+                        <h4 className="font-bold text-gray-900 hover:text-blue-600 transition-colors line-clamp-2">
+                          {rp.title}
+                        </h4>
+                        <p className="text-sm text-gray-500 mt-2">{formatDate(rp.publishedAt)}</p>
                       </div>
                     </article>
                   </Link>
@@ -380,23 +332,26 @@ export const BlogPostPage: React.FC = () => {
         </div>
       </article>
 
-      {/* Delete Dialog */}
+      {/* Delete confirmation dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete Article</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete &quot;{post.title}&quot;? This action cannot be undone.
+              Are you sure you want to delete &quot;{post.title}&quot;?
+              This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={handleDelete}>Delete</Button>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDelete}>
+              Delete
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
   );
 };
-
-export default BlogPostPage;

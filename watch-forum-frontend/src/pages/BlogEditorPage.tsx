@@ -1,31 +1,36 @@
 // ============================================
 // BLOG EDITOR PAGE
-// Create and edit blog posts (Owner only)
-// Auto-translates to all languages for SEO
+// Create and edit blog posts (Owner only).
+// Translation starts in the background immediately after the
+// post is saved — the owner is navigated to the post right away
+// and the language flags appear once translation completes.
 // ============================================
 
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useBlogStore } from '@/stores/blogStore';
 import { useAuthStore } from '@/stores/authStore';
-import { SUPPORTED_LANGUAGES } from '@/stores/languageStore';
-import { getTranslationUrls } from '@/services/translationService';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { X, Plus, Save, Eye, ArrowLeft, Globe, ExternalLink, Copy, Check, Trash2 } from 'lucide-react';
+import { X, Plus, Save, Eye, ArrowLeft, Trash2 } from 'lucide-react';
 
 export const BlogEditorPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const { currentUser, isOwner } = useAuthStore();
-  const { createPost, updatePost, getOriginalPostByAnySlug, deletePostWithTranslations, translatePost } = useBlogStore();
+  const {
+    createPost,
+    updatePost,
+    getOriginalPostByAnySlug,
+    deletePostWithTranslations,
+    translatePost,
+  } = useBlogStore();
 
   const isEditing = !!slug;
-  // Use getOriginalPostByAnySlug to find the post from any slug (English or translated)
   const existingPost = slug ? getOriginalPostByAnySlug(slug) : undefined;
 
   // Form state
@@ -38,18 +43,14 @@ export const BlogEditorPage: React.FC = () => {
   const [metaTitle, setMetaTitle] = useState('');
   const [metaDescription, setMetaDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isTranslating, setIsTranslating] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
   // Redirect if not owner
   useEffect(() => {
-    if (!isOwner()) {
-      navigate('/blog');
-    }
+    if (!isOwner()) navigate('/blog');
   }, [isOwner, navigate]);
 
-  // Load existing post data if editing
+  // Populate form when editing
   useEffect(() => {
     if (existingPost) {
       setTitle(existingPost.title);
@@ -70,25 +71,18 @@ export const BlogEditorPage: React.FC = () => {
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
-    setTags(tags.filter(tag => tag !== tagToRemove));
+    setTags(tags.filter(t => t !== tagToRemove));
   };
 
-  const generateSlug = (title: string) => {
-    return title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-  };
+  const generateSlug = (t: string) =>
+    t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
   const handleSubmit = async () => {
-    if (!title.trim() || !excerpt.trim() || !content.trim()) {
-      return;
-    }
-
+    if (!title.trim() || !excerpt.trim() || !content.trim()) return;
     if (!currentUser) return;
 
     setIsSubmitting(true);
-    setError(null);
+    setError('');
 
     const postData = {
       title: title.trim(),
@@ -106,247 +100,170 @@ export const BlogEditorPage: React.FC = () => {
 
     try {
       if (isEditing && existingPost) {
+        // Update existing post
         await updatePost(existingPost.id, postData);
-        setIsSubmitting(false);
-        // Kick off real translation in the background (fire and forget)
-        setIsTranslating(true);
-        translatePost(existingPost.id).finally(() => setIsTranslating(false));
+        // Start translation in background — do NOT await (can take minutes)
+        translatePost(existingPost.id);
         navigate(`/blog/${postData.slug}`);
       } else {
+        // Create new post
         const newPost = await createPost(postData);
-        setIsSubmitting(false);
-        // Kick off real translation in the background (fire and forget)
-        setIsTranslating(true);
-        translatePost(newPost.id).finally(() => setIsTranslating(false));
+        // Start translation in background — do NOT await
+        translatePost(newPost.id);
         navigate(`/blog/${newPost.slug}`);
       }
-    } catch (err: unknown) {
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save post. Please try again.');
       setIsSubmitting(false);
-      setError(err instanceof Error ? err.message : 'Failed to save post. Please try again.');
     }
   };
 
   const handleDelete = async () => {
-    if (existingPost && confirm('Are you sure you want to delete this post and all its translations? This cannot be undone.')) {
-      try {
-        await deletePostWithTranslations(existingPost.id);
-        navigate('/blog');
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Failed to delete post. Please try again.');
-      }
+    if (
+      existingPost &&
+      confirm(
+        'Are you sure you want to delete this post? This cannot be undone.',
+      )
+    ) {
+      await deletePostWithTranslations(existingPost.id);
+      navigate('/blog');
     }
   };
-
-  const handleCopyUrl = (url: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}${url}`);
-    setCopiedUrl(url);
-    setTimeout(() => setCopiedUrl(null), 2000);
-  };
-
-  const handlePreview = () => {
-    const previewWindow = window.open('', '_blank');
-    if (previewWindow) {
-      previewWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>${title || 'Preview'} - Watch Trading Forums</title>
-          <style>
-            body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
-            h1 { font-size: 2.5em; margin-bottom: 0.5em; }
-            .meta { color: #666; margin-bottom: 2em; }
-            .excerpt { font-size: 1.2em; color: #444; font-style: italic; margin-bottom: 2em; padding: 20px; background: #f5f5f5; border-left: 4px solid #0066cc; }
-            img { max-width: 100%; height: auto; margin: 20px 0; }
-          </style>
-        </head>
-        <body>
-          <h1>${title || 'Untitled'}</h1>
-          <div class="meta">By ${currentUser?.username || 'Anonymous'}</div>
-          <div class="excerpt">${excerpt}</div>
-          ${featuredImage ? `<img src="${featuredImage}" alt="${title}">` : ''}
-          <div>${content}</div>
-        </body>
-        </html>
-      `);
-    }
-  };
-
-  // Get translation URLs if editing
-  const translationUrls = existingPost 
-    ? getTranslationUrls(existingPost.slug, existingPost.translations || {})
-    : [];
-
-  if (!isOwner()) {
-    return null;
-  }
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4 max-w-4xl">
+    <div className="min-h-screen bg-background">
+      <div className="max-w-4xl mx-auto px-4 py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
-          <Button variant="ghost" onClick={() => navigate('/blog')}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Blog
-          </Button>
-          <div className="flex items-center gap-2">
-            {isEditing && (
-              <Button variant="destructive" onClick={handleDelete}>
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete
-              </Button>
-            )}
-            <Button variant="outline" onClick={handlePreview}>
-              <Eye className="h-4 w-4 mr-2" />
-              Preview
-            </Button>
-            <Button 
-              onClick={handleSubmit} 
-              disabled={isSubmitting || !title.trim() || !excerpt.trim() || !content.trim()}
-              className="bg-blue-600 hover:bg-blue-700"
+          <div className="flex items-center gap-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => navigate('/blog')}
             >
-              <Save className="h-4 w-4 mr-2" />
-              {isSubmitting ? 'Saving...' : isEditing ? 'Update' : 'Publish'}
+              <ArrowLeft className="h-5 w-5" />
             </Button>
-            {isTranslating && (
-              <span className="text-xs text-blue-600 flex items-center gap-1 ml-1">
-                <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full" />
-                Translating...
-              </span>
+            <div>
+              <h1 className="text-2xl font-bold">
+                {isEditing ? 'Edit Post' : 'New Blog Post'}
+              </h1>
+              <p className="text-muted-foreground text-sm">
+                {isEditing
+                  ? 'Update and republish. Translation will restart automatically.'
+                  : 'Publish and translations will generate in the background.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {isEditing && existingPost && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/blog/${existingPost.slug}`)}
+                >
+                  <Eye className="h-4 w-4 mr-2" />
+                  View Post
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleDelete}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete
+                </Button>
+              </>
             )}
+            <Button onClick={handleSubmit} disabled={isSubmitting}>
+              <Save className="h-4 w-4 mr-2" />
+              {isSubmitting ? 'Saving…' : isEditing ? 'Update Post' : 'Publish Post'}
+            </Button>
           </div>
         </div>
 
+        {/* Error banner */}
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+          <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive text-sm">
             {error}
           </div>
         )}
 
-        <h1 className="text-3xl font-bold text-gray-900 mb-8">
-          {isEditing ? 'Edit Article' : 'Create New Article'}
-        </h1>
-
-        {/* Translation URLs - Only show when editing */}
-        {isEditing && translationUrls.length > 0 && (
-          <Card className="mb-6 border-green-200 bg-green-50">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-green-800">
-                <Globe className="h-5 w-5" />
-                SEO Translation URLs
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-green-700 mb-4">
-                This article has been auto-translated to {translationUrls.length - 1} languages for SEO. 
-                Only the English version appears in the blog list, but Google crawlers will find all versions.
-              </p>
-              <div className="space-y-2">
-                {translationUrls.map(({ lang, flag, name, url }) => (
-                  <div key={lang} className="flex items-center gap-3 p-2 bg-white rounded-lg">
-                    <span className="text-xl">{flag}</span>
-                    <span className="text-sm font-medium w-24">{name}</span>
-                    <code className="text-xs bg-gray-100 px-2 py-1 rounded flex-1 truncate">{url}</code>
-                    <div className="flex gap-1">
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
-                        onClick={() => handleCopyUrl(url)}
-                      >
-                        {copiedUrl === url ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                      </Button>
-                      <Link to={url} target="_blank">
-                        <Button variant="ghost" size="sm">
-                          <ExternalLink className="h-4 w-4" />
-                        </Button>
-                      </Link>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Main Content */}
         <div className="space-y-6">
           {/* Title */}
           <Card>
             <CardHeader>
-              <CardTitle>Article Title</CardTitle>
+              <CardTitle>Post Details</CardTitle>
             </CardHeader>
-            <CardContent>
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Enter a compelling title..."
-                className="text-lg"
-              />
-              <p className="text-sm text-gray-500 mt-2">
-                URL slug: /blog/{generateSlug(title) || 'your-article-slug'}
-              </p>
-            </CardContent>
-          </Card>
+            <CardContent className="space-y-4">
+              <div>
+                <Label htmlFor="title">Title *</Label>
+                <Input
+                  id="title"
+                  value={title}
+                  onChange={e => setTitle(e.target.value)}
+                  placeholder="Enter post title"
+                  className="mt-1"
+                />
+                {title && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Slug: /blog/{generateSlug(title)}
+                  </p>
+                )}
+              </div>
 
-          {/* Excerpt */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Excerpt</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Textarea
-                value={excerpt}
-                onChange={(e) => setExcerpt(e.target.value)}
-                placeholder="Write a brief summary that will appear in search results and previews..."
-                rows={3}
-              />
-              <p className="text-sm text-gray-500 mt-2">
-                {excerpt.length} characters. Recommended: 150-160 characters for SEO.
-              </p>
-            </CardContent>
-          </Card>
+              <div>
+                <Label htmlFor="excerpt">Excerpt *</Label>
+                <Textarea
+                  id="excerpt"
+                  value={excerpt}
+                  onChange={e => setExcerpt(e.target.value)}
+                  placeholder="Brief summary shown in blog listings…"
+                  rows={3}
+                  className="mt-1"
+                />
+              </div>
 
-          {/* Featured Image */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Featured Image</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Input
-                value={featuredImage}
-                onChange={(e) => setFeaturedImage(e.target.value)}
-                placeholder="https://example.com/image.jpg"
-              />
-              {featuredImage && (
-                <div className="mt-4">
-                  <img 
-                    src={featuredImage} 
-                    alt="Preview" 
-                    className="max-h-48 rounded-lg object-cover"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
+              <div>
+                <Label htmlFor="featuredImage">Featured Image URL</Label>
+                <Input
+                  id="featuredImage"
+                  value={featuredImage}
+                  onChange={e => setFeaturedImage(e.target.value)}
+                  placeholder="https://images.unsplash.com/…"
+                  className="mt-1"
+                />
+                {featuredImage && (
+                  <img
+                    src={featuredImage}
+                    alt="Preview"
+                    className="mt-2 h-32 w-full object-cover rounded-md"
+                    onError={e => ((e.target as HTMLImageElement).style.display = 'none')}
                   />
-                </div>
-              )}
+                )}
+              </div>
             </CardContent>
           </Card>
 
           {/* Content */}
           <Card>
             <CardHeader>
-              <CardTitle>Article Content</CardTitle>
+              <CardTitle>Content</CardTitle>
             </CardHeader>
             <CardContent>
+              <Label htmlFor="content">HTML Content *</Label>
               <Textarea
+                id="content"
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Write your article content here. HTML tags are supported."
+                onChange={e => setContent(e.target.value)}
+                placeholder="<h2>Section Title</h2><p>Your content here…</p>"
                 rows={20}
-                className="font-mono text-sm"
+                className="mt-1 font-mono text-sm"
               />
-              <p className="text-sm text-gray-500 mt-2">
-                Supports HTML formatting. Use &lt;h2&gt;, &lt;h3&gt;, &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;a&gt;, &lt;ul&gt;, &lt;li&gt; tags.
+              <p className="text-xs text-muted-foreground mt-2">
+                Accepts HTML. Use &lt;h2&gt;, &lt;h3&gt;, &lt;p&gt;, &lt;ul&gt;/&lt;li&gt;,
+                &lt;strong&gt; etc. All text inside tags will be translated automatically.
               </p>
             </CardContent>
           </Card>
@@ -357,93 +274,69 @@ export const BlogEditorPage: React.FC = () => {
               <CardTitle>Tags</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-wrap gap-2 mb-4">
-                {tags.map((tag) => (
-                  <Badge key={tag} className="bg-blue-100 text-blue-700">
+              <div className="flex gap-2 mb-3">
+                <Input
+                  value={newTag}
+                  onChange={e => setNewTag(e.target.value)}
+                  placeholder="Add a tag"
+                  onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
+                />
+                <Button variant="outline" size="icon" onClick={handleAddTag}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {tags.map(tag => (
+                  <Badge key={tag} variant="secondary" className="gap-1">
                     {tag}
-                    <button
-                      onClick={() => handleRemoveTag(tag)}
-                      className="ml-2 hover:text-blue-900"
-                    >
+                    <button onClick={() => handleRemoveTag(tag)}>
                       <X className="h-3 w-3" />
                     </button>
                   </Badge>
                 ))}
               </div>
-              <div className="flex gap-2">
-                <Input
-                  value={newTag}
-                  onChange={(e) => setNewTag(e.target.value)}
-                  placeholder="Add a tag..."
-                  onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
-                />
-                <Button type="button" onClick={handleAddTag} variant="outline">
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
             </CardContent>
           </Card>
 
-          {/* SEO Settings */}
+          {/* SEO */}
           <Card>
             <CardHeader>
-              <CardTitle>SEO Settings</CardTitle>
+              <CardTitle>SEO</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
-                <Label>Meta Title (optional)</Label>
+                <Label htmlFor="metaTitle">Meta Title</Label>
                 <Input
+                  id="metaTitle"
                   value={metaTitle}
-                  onChange={(e) => setMetaTitle(e.target.value)}
-                  placeholder={title || 'Custom title for search engines'}
+                  onChange={e => setMetaTitle(e.target.value)}
+                  placeholder="Defaults to post title"
+                  className="mt-1"
                 />
-                <p className="text-sm text-gray-500 mt-1">
-                  Defaults to article title if empty
-                </p>
               </div>
               <div>
-                <Label>Meta Description (optional)</Label>
+                <Label htmlFor="metaDescription">Meta Description</Label>
                 <Textarea
+                  id="metaDescription"
                   value={metaDescription}
-                  onChange={(e) => setMetaDescription(e.target.value)}
-                  placeholder={excerpt || 'Custom description for search engines'}
-                  rows={2}
+                  onChange={e => setMetaDescription(e.target.value)}
+                  placeholder="Defaults to excerpt"
+                  rows={3}
+                  className="mt-1"
                 />
-                <p className="text-sm text-gray-500 mt-1">
-                  Defaults to excerpt if empty
-                </p>
               </div>
             </CardContent>
           </Card>
 
-          {/* Auto-Translation Info */}
-          <Card className="bg-blue-50 border-blue-200">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-blue-800">
-                <Globe className="h-5 w-5" />
-                Auto-Translation for SEO
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-blue-700 mb-2">
-                When you publish this article, it will be automatically translated to all {SUPPORTED_LANGUAGES.length - 1} supported languages.
-              </p>
-              <p className="text-sm text-blue-700 mb-4">
-                Only the English version will appear in the blog list, but Google crawlers will index all language versions for better SEO.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {SUPPORTED_LANGUAGES.filter(l => l.code !== 'en').map(lang => (
-                  <Badge key={lang.code} variant="outline" className="bg-white">
-                    {lang.flag} {lang.name}
-                  </Badge>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          {/* Submit */}
+          <div className="flex justify-end">
+            <Button onClick={handleSubmit} disabled={isSubmitting} size="lg">
+              <Save className="h-4 w-4 mr-2" />
+              {isSubmitting ? 'Saving…' : isEditing ? 'Update Post' : 'Publish Post'}
+            </Button>
+          </div>
         </div>
       </div>
     </div>
   );
 };
-
-export default BlogEditorPage;

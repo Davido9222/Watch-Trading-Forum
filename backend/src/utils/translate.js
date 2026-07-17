@@ -1,15 +1,11 @@
 // ============================================
 // TRANSLATION UTILITY
-// MyMemory free API — no API key required.
-// Set MYMEMORY_EMAIL env var for higher limits (10k words/day vs 1k/day).
-//
-// MyMemory hard limit: 500 characters per single API request.
-// We split any text > 480 chars into word-based chunks, translate
-// each chunk individually, then rejoin.
+// Uses the Google Translate free endpoint (translate.googleapis.com).
+// No API key required. Same engine as translate.google.com.
+// Supports texts of any length via automatic chunking.
 // ============================================
 
-const MYMEMORY_EMAIL = process.env.MYMEMORY_EMAIL || '';
-const MAX_CHARS = 480; // Stay safely under MyMemory's 500-char per-request limit
+const MAX_CHARS = 4800; // Google accepts up to ~5000 chars per request
 
 // ─── Strip HTML to plain text, preserving paragraph breaks ───────────────────
 function stripHtml(html) {
@@ -31,27 +27,35 @@ function stripHtml(html) {
     .trim();
 }
 
-// ─── Split any text into chunks of at most MAX_CHARS at word boundaries ───────
+// ─── Split text into chunks at paragraph or word boundaries ──────────────────
 function splitIntoChunks(text) {
   if (!text || text.trim() === '') return [];
   if (text.length <= MAX_CHARS) return [text.trim()];
 
   const chunks = [];
-  const words = text.split(/\s+/);
+  const paragraphs = text.split(/\n\n+/);
   let current = '';
 
-  for (const word of words) {
-    const attempt = current ? `${current} ${word}` : word;
+  for (const para of paragraphs) {
+    const attempt = current ? `${current}\n\n${para}` : para;
     if (attempt.length > MAX_CHARS) {
       if (current) {
         chunks.push(current);
-        current = word;
+        current = para;
       } else {
-        // Single word longer than MAX_CHARS — force-split by character
-        for (let i = 0; i < word.length; i += MAX_CHARS) {
-          chunks.push(word.slice(i, i + MAX_CHARS));
+        // Single paragraph > MAX_CHARS: split at word boundaries
+        const words = para.split(/\s+/);
+        let wordChunk = '';
+        for (const word of words) {
+          const next = wordChunk ? `${wordChunk} ${word}` : word;
+          if (next.length > MAX_CHARS) {
+            if (wordChunk) chunks.push(wordChunk);
+            wordChunk = word;
+          } else {
+            wordChunk = next;
+          }
         }
-        current = '';
+        if (wordChunk) current = wordChunk;
       }
     } else {
       current = attempt;
@@ -61,41 +65,65 @@ function splitIntoChunks(text) {
   return chunks;
 }
 
-// ─── Call MyMemory API for one chunk (with simple retry) ─────────────────────
+// ─── Map language codes to Google Translate codes ────────────────────────────
+const GOOGLE_LANG_MAP = {
+  'zh-CN': 'zh-CN',
+  'zh': 'zh-CN',
+  'pcm': 'en',   // Nigerian Pidgin — Google doesn't support it; fall back to English
+};
+
+function toGoogleLang(code) {
+  return GOOGLE_LANG_MAP[code] || code;
+}
+
+// ─── Call Google Translate for one chunk ─────────────────────────────────────
 async function translateChunk(chunk, targetLang) {
   if (!chunk || !chunk.trim()) return chunk;
 
-  const emailParam = MYMEMORY_EMAIL ? `&de=${encodeURIComponent(MYMEMORY_EMAIL)}` : '';
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(chunk)}&langpair=en|${targetLang}${emailParam}`;
+  const gl = toGoogleLang(targetLang);
+  if (gl === 'en') return chunk; // No translation needed
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  const url =
+    `https://translate.googleapis.com/translate_a/single` +
+    `?client=gtx&sl=en&tl=${encodeURIComponent(gl)}&dt=t` +
+    `&q=${encodeURIComponent(chunk)}`;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; WatchForum/1.0)',
+        },
+      });
+
+      if (!res.ok) {
+        console.warn(`[translate] HTTP ${res.status} on attempt ${attempt}`);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, attempt * 500));
+          continue;
+        }
+        return chunk;
+      }
+
       const data = await res.json();
 
-      if (
-        data.responseStatus === 200 &&
-        data.responseData?.translatedText &&
-        data.responseData.translatedText.trim() !== ''
-      ) {
-        return data.responseData.translatedText;
+      // Google returns: [[["translated", "original", ...], ...], ...]
+      if (Array.isArray(data) && Array.isArray(data[0])) {
+        const translated = data[0]
+          .map(segment => (Array.isArray(segment) ? segment[0] : ''))
+          .filter(Boolean)
+          .join('');
+        if (translated.trim()) return translated;
       }
 
-      // MyMemory returns 429 or quota-exceeded messages
-      if (data.responseStatus === 429 || (data.responseDetails || '').includes('QUERY')) {
-        console.warn(`[translate] Quota hit for "${chunk.slice(0, 30)}…"`);
-        return chunk; // Return original on quota error
-      }
-
+      return chunk; // Unexpected shape — return original
     } catch (err) {
-      console.warn(`[translate] Attempt ${attempt} failed:`, err.message);
+      console.warn(`[translate] Attempt ${attempt} error:`, err.message);
+      if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 500));
     }
-
-    // Small delay before retry
-    if (attempt < 2) await new Promise(r => setTimeout(r, 200));
   }
 
-  return chunk; // Fallback to original on all failures
+  return chunk; // All attempts failed — fall back to original
 }
 
 // ─── Translate a full text (any length) to the target language ────────────────
@@ -103,40 +131,27 @@ async function translateText(text, targetLang) {
   if (!text || !text.trim()) return text;
   if (targetLang === 'en') return text;
 
-  // Split the plain text into paragraphs first, then chunk each paragraph
-  const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
-  const translatedParagraphs = [];
+  const chunks = splitIntoChunks(text);
+  if (chunks.length === 0) return text;
 
-  for (const paragraph of paragraphs) {
-    const chunks = splitIntoChunks(paragraph.trim());
-    if (chunks.length === 0) {
-      translatedParagraphs.push(paragraph);
-      continue;
-    }
-
-    const translatedChunks = [];
-    for (const chunk of chunks) {
-      const result = await translateChunk(chunk, targetLang);
-      translatedChunks.push(result);
-      // Small pause between chunk calls to avoid rate-limiting
-      if (chunks.length > 1) await new Promise(r => setTimeout(r, 100));
-    }
-
-    translatedParagraphs.push(translatedChunks.join(' '));
+  const results = [];
+  for (const chunk of chunks) {
+    const result = await translateChunk(chunk, targetLang);
+    results.push(result);
+    // Small pause between chunks to stay polite
+    if (chunks.length > 1) await new Promise(r => setTimeout(r, 150));
   }
 
-  return translatedParagraphs.join('\n\n');
+  return results.join('\n\n');
 }
 
-// ─── Translate an array of texts (called by the translate route) ──────────────
-// For the blog content (index 2), we strip HTML and translate the full plain text.
-// The result is returned as plain text; BlogEditorPage wraps it in <p> tags.
+// ─── Translate an array of texts (called by the /api/translate route) ─────────
 async function translateTexts(texts, targetLang) {
   const results = [];
   for (const text of texts) {
     const plain = stripHtml(text);
     const translated = await translateText(plain, targetLang);
-    results.push(translated);
+    results.push(translated || plain);
   }
   return results;
 }

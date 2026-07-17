@@ -150,8 +150,8 @@ export const useBlogStore = create<BlogState>()((set, get) => ({
       );
       translations[code] = result;
 
-      // Pace between languages — prevents MyMemory rate-limit after the first few
-      await new Promise(r => setTimeout(r, 1200));
+      // Short pause between languages to respect MyMemory rate limits
+      await new Promise(r => setTimeout(r, 250));
     }
 
     // Update local store → UI reacts (flags appear)

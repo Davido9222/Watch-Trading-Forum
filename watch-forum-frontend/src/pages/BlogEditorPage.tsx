@@ -200,7 +200,9 @@ export const BlogEditorPage: React.FC = () => {
         store.updatePost(existingPost.id, postData, false);
         savedId = existingPost.id;
       } else {
-        const newPost = store.createPost(postData, false);
+        // autoTranslate=true gives instant fake placeholders so flags always appear
+        // Real GT translations will override them in the next step
+        const newPost = store.createPost(postData, true);
         savedId = newPost.id;
       }
 

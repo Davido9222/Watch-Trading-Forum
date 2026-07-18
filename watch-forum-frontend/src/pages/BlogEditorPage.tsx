@@ -258,7 +258,17 @@ export const BlogEditorPage: React.FC = () => {
   if (!isOwner()) return null;
 
   const translationUrls = existingPost
-    ? getTranslationUrls(existingPost.slug, existingPost.translations || {})
+    ? [
+        { lang: 'en', flag: '🇬🇧', name: 'English', url: `/blog/${existingPost.slug}` },
+        ...SUPPORTED_LANGUAGES
+          .filter(l => l.code !== 'en' && existingPost.translations?.[l.code])
+          .map(l => ({
+            lang: l.code,
+            flag: l.flag,
+            name: l.name,
+            url: `/blog/${l.code}/${existingPost.translations![l.code]!.slug}`,
+          })),
+      ]
     : [];
 
   return (

@@ -97,8 +97,11 @@ function App() {
             <Route path="/shoutbox" element={<ShoutboxPage />} />
             <Route path="/play-flappy-watch" element={<FlappyWatchPage />} />
 
-            {/* Blog — single URL per post, language switching via store */}
+            {/* Blog — static URL per language via /blog/:lang/:slug */}
             <Route path="/blog" element={<BlogListPage />} />
+            {/* Translated post URLs: /blog/fr/mon-article-fr */}
+            <Route path="/blog/:lang/:slug" element={<BlogPostPage />} />
+            {/* English post URL: /blog/my-article */}
             <Route path="/blog/:slug" element={<BlogPostPage />} />
 
             {/* Protected Routes */}

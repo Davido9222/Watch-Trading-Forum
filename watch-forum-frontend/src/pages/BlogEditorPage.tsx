@@ -1,3 +1,10 @@
+// ============================================
+// BLOG EDITOR PAGE
+// Owner-only page for creating and editing blog posts.
+// Translation runs SERVER-SIDE via POST /api/blog/:id/translate
+// (uses Node https — no CORS issues).
+// ============================================
+
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useBlogStore } from '@/stores/blogStore';
@@ -13,119 +20,10 @@ import {
   X, Plus, Save, Eye, ArrowLeft, Globe,
   ExternalLink, Copy, Check, Trash2, Loader2
 } from 'lucide-react';
-
-// Google Translate language code overrides
-const GT_LANG: Record<string, string> = {
-  zh: 'zh-CN',
-  pcm: 'en', // Nigerian Pidgin not supported — store English
-};
-function gtLang(code: string) { return GT_LANG[code] || code; }
+import { api } from '@/lib/api';
 
 const generateSlug = (t: string) =>
   t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-// ─── Strip HTML to plain text ─────────────────────────────────────────────────
-function stripHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<\/h[1-6]>/gi, '\n')
-    .replace(/<\/li>/gi, '\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, '\n\n').trim();
-}
-
-// ─── Translate a single string via Google Translate (browser fetch) ───────────
-async function googleTranslate(text: string, targetCode: string): Promise<string> {
-  const tl = gtLang(targetCode);
-  if (tl === 'en' || !text.trim()) return text;
-
-  // Split into ≤4800-char chunks at word boundaries
-  const chunks: string[] = [];
-  if (text.length <= 4800) {
-    chunks.push(text);
-  } else {
-    const words = text.split(/\s+/);
-    let cur = '';
-    for (const w of words) {
-      const next = cur ? `${cur} ${w}` : w;
-      if (next.length > 4800) { chunks.push(cur); cur = w; }
-      else cur = next;
-    }
-    if (cur) chunks.push(cur);
-  }
-
-  const parts: string[] = [];
-  for (const chunk of chunks) {
-    try {
-      const url =
-        'https://translate.googleapis.com/translate_a/single' +
-        '?client=gtx&sl=en&tl=' + encodeURIComponent(tl) +
-        '&dt=t&q=' + encodeURIComponent(chunk);
-      const res = await fetch(url);
-      const data = await res.json();
-      // Response: [[["translated","original",...], ...], ...]
-      const translated = (data[0] as [string, ...unknown[]][])
-        .map(seg => seg[0] || '')
-        .filter(Boolean)
-        .join('');
-      parts.push(translated || chunk);
-    } catch {
-      parts.push(chunk); // fallback to original on error
-    }
-    if (chunks.length > 1) await new Promise(r => setTimeout(r, 80));
-  }
-  return parts.join(' ');
-}
-
-type Translations = Record<string, {
-  title: string; slug: string; excerpt: string;
-  content: string; metaTitle: string; metaDescription: string;
-}>;
-
-// ─── Build all translations directly in the browser ───────────────────────────
-async function buildTranslations(
-  baseSlug: string,
-  t: string, ex: string, body: string, mt: string, md: string,
-  onProgress: (msg: string) => void,
-): Promise<Translations> {
-  const plain = stripHtml(body);
-  const translations: Translations = {};
-  const langs = SUPPORTED_LANGUAGES.filter(l => l.code !== 'en');
-
-  for (const lang of langs) {
-    onProgress(`Translating to ${lang.name} ${lang.flag}…`);
-    try {
-      const [tTitle, tExcerpt, tContent, tMeta, tDesc] = await Promise.all([
-        googleTranslate(t, lang.code),
-        googleTranslate(ex, lang.code),
-        googleTranslate(plain, lang.code),
-        googleTranslate(mt || t, lang.code),
-        googleTranslate(md || ex, lang.code),
-      ]);
-      translations[lang.code] = {
-        title: tTitle || t,
-        slug: `${baseSlug}-${lang.code}`,
-        excerpt: tExcerpt || ex,
-        content: tContent || plain,
-        metaTitle: tMeta || mt || t,
-        metaDescription: tDesc || md || ex,
-      };
-    } catch {
-      // Keep English as fallback so the flag still appears
-      translations[lang.code] = {
-        title: t, slug: `${baseSlug}-${lang.code}`,
-        excerpt: ex, content: plain,
-        metaTitle: mt || t, metaDescription: md || ex,
-      };
-    }
-  }
-  onProgress('');
-  return translations;
-}
 
 export const BlogEditorPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
@@ -151,12 +49,10 @@ export const BlogEditorPage: React.FC = () => {
   const [progress, setProgress] = useState('');
   const [submitError, setSubmitError] = useState('');
 
-  // Wait for auth to initialise before owner check
   useEffect(() => {
     if (!isInitializing && !isOwner()) navigate('/blog');
   }, [isInitializing, isOwner, navigate]);
 
-  // Populate form when editing
   useEffect(() => {
     if (existingPost) {
       setTitle(existingPost.title);
@@ -208,16 +104,10 @@ export const BlogEditorPage: React.FC = () => {
         finalSlug = newPost.slug || postSlug;
       }
 
-      // Build all translations before navigating — post not shown until ready
-      const translations = await buildTranslations(
-        finalSlug,
-        postData.title, postData.excerpt, postData.content,
-        postData.metaTitle, postData.metaDescription,
-        setProgress,
-      );
-
-      // Save translations to store and backend atomically
-      store.setPostTranslations(savedId, translations);
+      // Translate server-side — backend calls Google Translate with no CORS issues
+      setProgress('Translating into 14 languages via Google Translate…');
+      const translated = await api.post(`/blog/${savedId}/translate`, {}) as { translations: Record<string, unknown> };
+      store.setPostTranslations(savedId, translated.translations);
 
       navigate(`/blog/${finalSlug}`);
     } catch (err: unknown) {
@@ -225,25 +115,19 @@ export const BlogEditorPage: React.FC = () => {
       setSubmitError(msg);
     } finally {
       setIsSubmitting(false);
+      setProgress('');
     }
   };
 
-  // ─── Translate existing post (for seed posts or re-translate) ─────────────
+  // ─── Re-translate existing post ────────────────────────────────────────────
   const handleTranslateExisting = async () => {
     if (!existingPost) return;
     setIsTranslating(true);
     setSubmitError('');
     try {
-      const translations = await buildTranslations(
-        existingPost.slug,
-        existingPost.title,
-        existingPost.excerpt,
-        existingPost.content,
-        existingPost.metaTitle || existingPost.title,
-        existingPost.metaDescription || existingPost.excerpt,
-        setProgress,
-      );
-      store.setPostTranslations(existingPost.id, translations);
+      setProgress('Translating into 14 languages via Google Translate…');
+      const translated = await api.post(`/blog/${existingPost.id}/translate`, {}) as { translations: Record<string, unknown> };
+      store.setPostTranslations(existingPost.id, translated.translations);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Translation failed.';
       setSubmitError(msg);
@@ -322,7 +206,7 @@ export const BlogEditorPage: React.FC = () => {
                 disabled={isTranslating || isSubmitting}
               >
                 {isTranslating
-                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{progress || 'Translating…'}</>
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Translating…</>
                   : <><Globe className="h-4 w-4 mr-2" />{hasTranslations ? 'Re-translate' : 'Translate All'}</>
                 }
               </Button>
@@ -336,7 +220,9 @@ export const BlogEditorPage: React.FC = () => {
               className="bg-blue-600 hover:bg-blue-700"
             >
               {isSubmitting ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{progress || 'Publishing…'}</>
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  {progress ? 'Translating…' : 'Saving…'}
+                </>
               ) : (
                 <><Save className="h-4 w-4 mr-2" />{isEditing ? 'Update' : 'Publish'}</>
               )}
@@ -384,7 +270,7 @@ export const BlogEditorPage: React.FC = () => {
           </Card>
         )}
 
-        {/* No translations yet — prompt owner to translate */}
+        {/* No translations yet */}
         {isEditing && !hasTranslations && !isTranslating && (
           <Card className="mb-6 border-yellow-200 bg-yellow-50">
             <CardContent className="pt-4">
@@ -478,7 +364,8 @@ export const BlogEditorPage: React.FC = () => {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-blue-700 mb-3">
-                Each language gets its own static URL before the post goes live. SEO meta title and description are translated too. Translation runs directly in your browser using Google Translate.
+                Each language gets its own static URL before the post goes live. SEO meta title and description are translated too.
+                Translation runs server-side via Google Translate (takes ~10–15 seconds).
               </p>
               <div className="flex flex-wrap gap-2">
                 {SUPPORTED_LANGUAGES.filter(l => l.code !== 'en').map(lang => (

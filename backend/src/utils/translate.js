@@ -1,11 +1,12 @@
 // ============================================
 // TRANSLATION UTILITY
-// Uses the Google Translate free endpoint (translate.googleapis.com).
-// No API key required. Same engine as translate.google.com.
-// Supports texts of any length via automatic chunking.
+// Google Translate free endpoint — no API key required.
+// Uses Node's built-in https module (works on all Node versions, 8s timeout).
 // ============================================
 
-const MAX_CHARS = 4800; // Google accepts up to ~5000 chars per request
+const https = require('https');
+
+const MAX_CHARS = 4800;
 
 // ─── Strip HTML to plain text, preserving paragraph breaks ───────────────────
 function stripHtml(html) {
@@ -27,36 +28,37 @@ function stripHtml(html) {
     .trim();
 }
 
-// ─── Split text into chunks at paragraph or word boundaries ──────────────────
+// ─── HTTPS GET with timeout (no external deps) ───────────────────────────────
+function httpsGet(url, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, (res) => {
+      let raw = '';
+      res.on('data', chunk => { raw += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(raw)); }
+        catch (e) { reject(new Error(`JSON parse error: ${e.message}`)); }
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Request timed out'));
+    });
+    req.on('error', reject);
+  });
+}
+
+// ─── Split text into chunks at word boundaries ───────────────────────────────
 function splitIntoChunks(text) {
   if (!text || text.trim() === '') return [];
   if (text.length <= MAX_CHARS) return [text.trim()];
 
   const chunks = [];
-  const paragraphs = text.split(/\n\n+/);
+  const words = text.split(/\s+/);
   let current = '';
-
-  for (const para of paragraphs) {
-    const attempt = current ? `${current}\n\n${para}` : para;
+  for (const word of words) {
+    const attempt = current ? `${current} ${word}` : word;
     if (attempt.length > MAX_CHARS) {
-      if (current) {
-        chunks.push(current);
-        current = para;
-      } else {
-        // Single paragraph > MAX_CHARS: split at word boundaries
-        const words = para.split(/\s+/);
-        let wordChunk = '';
-        for (const word of words) {
-          const next = wordChunk ? `${wordChunk} ${word}` : word;
-          if (next.length > MAX_CHARS) {
-            if (wordChunk) chunks.push(wordChunk);
-            wordChunk = word;
-          } else {
-            wordChunk = next;
-          }
-        }
-        if (wordChunk) current = wordChunk;
-      }
+      if (current) chunks.push(current);
+      current = word;
     } else {
       current = attempt;
     }
@@ -66,67 +68,45 @@ function splitIntoChunks(text) {
 }
 
 // ─── Map language codes to Google Translate codes ────────────────────────────
-const GOOGLE_LANG_MAP = {
-  'zh-CN': 'zh-CN',
-  'zh': 'zh-CN',
-  'pcm': 'en',   // Nigerian Pidgin — Google doesn't support it; fall back to English
-};
+const GOOGLE_LANG_MAP = { 'zh': 'zh-CN', 'pcm': 'en' };
+function toGoogleLang(code) { return GOOGLE_LANG_MAP[code] || code; }
 
-function toGoogleLang(code) {
-  return GOOGLE_LANG_MAP[code] || code;
-}
-
-// ─── Call Google Translate for one chunk ─────────────────────────────────────
+// ─── Translate one chunk via Google Translate ─────────────────────────────────
 async function translateChunk(chunk, targetLang) {
   if (!chunk || !chunk.trim()) return chunk;
 
   const gl = toGoogleLang(targetLang);
-  if (gl === 'en') return chunk; // No translation needed
+  if (gl === 'en') return chunk;
 
   const url =
-    `https://translate.googleapis.com/translate_a/single` +
-    `?client=gtx&sl=en&tl=${encodeURIComponent(gl)}&dt=t` +
-    `&q=${encodeURIComponent(chunk)}`;
+    'https://translate.googleapis.com/translate_a/single' +
+    '?client=gtx&sl=en&tl=' + encodeURIComponent(gl) +
+    '&dt=t&q=' + encodeURIComponent(chunk);
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; WatchForum/1.0)',
-        },
-      });
+      const data = await httpsGet(url);
 
-      if (!res.ok) {
-        console.warn(`[translate] HTTP ${res.status} on attempt ${attempt}`);
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, attempt * 500));
-          continue;
-        }
-        return chunk;
-      }
-
-      const data = await res.json();
-
-      // Google returns: [[["translated", "original", ...], ...], ...]
+      // Response shape: [[["translated","original",...], ...], ...]
       if (Array.isArray(data) && Array.isArray(data[0])) {
         const translated = data[0]
-          .map(segment => (Array.isArray(segment) ? segment[0] : ''))
+          .map(seg => (Array.isArray(seg) ? seg[0] : ''))
           .filter(Boolean)
           .join('');
         if (translated.trim()) return translated;
       }
 
-      return chunk; // Unexpected shape — return original
+      return chunk; // Unexpected shape
     } catch (err) {
-      console.warn(`[translate] Attempt ${attempt} error:`, err.message);
-      if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 500));
+      console.warn(`[translate] Attempt ${attempt} failed:`, err.message);
+      if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 600));
     }
   }
 
-  return chunk; // All attempts failed — fall back to original
+  return chunk; // All attempts failed — return original
 }
 
-// ─── Translate a full text (any length) to the target language ────────────────
+// ─── Translate any-length text ────────────────────────────────────────────────
 async function translateText(text, targetLang) {
   if (!text || !text.trim()) return text;
   if (targetLang === 'en') return text;
@@ -138,14 +118,12 @@ async function translateText(text, targetLang) {
   for (const chunk of chunks) {
     const result = await translateChunk(chunk, targetLang);
     results.push(result);
-    // Small pause between chunks to stay polite
-    if (chunks.length > 1) await new Promise(r => setTimeout(r, 150));
+    if (chunks.length > 1) await new Promise(r => setTimeout(r, 100));
   }
-
-  return results.join('\n\n');
+  return results.join(' ');
 }
 
-// ─── Translate an array of texts (called by the /api/translate route) ─────────
+// ─── Translate array of texts — called by /api/translate route ───────────────
 async function translateTexts(texts, targetLang) {
   const results = [];
   for (const text of texts) {

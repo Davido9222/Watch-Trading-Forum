@@ -3,6 +3,7 @@
 // Posts are persisted in MongoDB via the backend API.
 // Starts empty — no seed posts shown on load.
 //
+// setPostTranslations() saves translations to local store + backend.
 // translatePost() processes all 15 languages one at a time and
 // updates translationProgress[postId] after each language so the
 // editor can display a live "Translating 3/15 — French…" counter.
@@ -36,6 +37,9 @@ interface BlogState {
   updatePost: (id: string, updates: Partial<BlogPost>) => Promise<void>;
   deletePost: (id: string) => Promise<void>;
   deletePostWithTranslations: (id: string) => Promise<void>;
+
+  /** Save translations to local store and persist to backend */
+  setPostTranslations: (id: string, translations: Record<string, any>) => void;
 
   getPostBySlug: (slug: string) => BlogPost | undefined;
   getPostById: (id: string) => BlogPost | undefined;
@@ -103,6 +107,14 @@ export const useBlogStore = create<BlogState>()((set, get) => ({
   deletePostWithTranslations: async (id) => {
     await api.del(`/blog/${id}`);
     set(state => ({ posts: state.posts.filter(p => p.id !== id) }));
+  },
+
+  // ─── setPostTranslations ────────────────────────────────────────────────────
+  setPostTranslations: (id, translations) => {
+    set(state => ({
+      posts: state.posts.map(p => (p.id === id ? { ...p, translations } : p)),
+    }));
+    api.patch(`/blog/${id}`, { translations }).catch(() => {});
   },
 
   // ─── translatePost ───────────────────────────────────────────────────────────
@@ -176,7 +188,16 @@ export const useBlogStore = create<BlogState>()((set, get) => ({
     }));
   },
 
-  getPostBySlug: (slug) => get().posts.find(p => p.slug === slug),
+  // Search English slug first; if not found, search within all translations.
+  // This lets /blog/fr/my-post-fr correctly load the French version.
+  getPostBySlug: (slug) => {
+    const direct = get().posts.find(p => p.slug === slug);
+    if (direct) return direct;
+    return get().posts.find(p =>
+      p.translations &&
+      Object.values(p.translations as Record<string, any>).some(t => t.slug === slug),
+    );
+  },
 
   getOriginalPostByAnySlug: (slug) =>
     get().posts.find(p => {

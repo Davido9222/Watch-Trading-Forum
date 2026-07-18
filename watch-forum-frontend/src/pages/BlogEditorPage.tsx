@@ -200,9 +200,7 @@ export const BlogEditorPage: React.FC = () => {
         store.updatePost(existingPost.id, postData, false);
         savedId = existingPost.id;
       } else {
-        // autoTranslate=true gives instant fake placeholders so flags always appear
-        // Real GT translations will override them in the next step
-        const newPost = store.createPost(postData, true);
+        const newPost = store.createPost(postData, false);
         savedId = newPost.id;
       }
 
@@ -258,17 +256,7 @@ export const BlogEditorPage: React.FC = () => {
   if (!isOwner()) return null;
 
   const translationUrls = existingPost
-    ? [
-        { lang: 'en', flag: '🇬🇧', name: 'English', url: `/blog/${existingPost.slug}` },
-        ...SUPPORTED_LANGUAGES
-          .filter(l => l.code !== 'en' && existingPost.translations?.[l.code])
-          .map(l => ({
-            lang: l.code,
-            flag: l.flag,
-            name: l.name,
-            url: `/blog/${l.code}/${existingPost.translations![l.code]!.slug}`,
-          })),
-      ]
+    ? getTranslationUrls(existingPost.slug, existingPost.translations || {})
     : [];
 
   return (

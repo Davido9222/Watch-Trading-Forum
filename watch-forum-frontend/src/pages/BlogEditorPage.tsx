@@ -3,7 +3,6 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useBlogStore } from '@/stores/blogStore';
 import { useAuthStore } from '@/stores/authStore';
 import { SUPPORTED_LANGUAGES } from '@/stores/languageStore';
-import { getTranslationUrls } from '@/services/translationService';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -87,6 +86,47 @@ type Translations = Record<string, {
   content: string; metaTitle: string; metaDescription: string;
 }>;
 
+// ─── Build all translations directly in the browser ───────────────────────────
+async function buildTranslations(
+  baseSlug: string,
+  t: string, ex: string, body: string, mt: string, md: string,
+  onProgress: (msg: string) => void,
+): Promise<Translations> {
+  const plain = stripHtml(body);
+  const translations: Translations = {};
+  const langs = SUPPORTED_LANGUAGES.filter(l => l.code !== 'en');
+
+  for (const lang of langs) {
+    onProgress(`Translating to ${lang.name} ${lang.flag}…`);
+    try {
+      const [tTitle, tExcerpt, tContent, tMeta, tDesc] = await Promise.all([
+        googleTranslate(t, lang.code),
+        googleTranslate(ex, lang.code),
+        googleTranslate(plain, lang.code),
+        googleTranslate(mt || t, lang.code),
+        googleTranslate(md || ex, lang.code),
+      ]);
+      translations[lang.code] = {
+        title: tTitle || t,
+        slug: `${baseSlug}-${lang.code}`,
+        excerpt: tExcerpt || ex,
+        content: tContent || plain,
+        metaTitle: tMeta || mt || t,
+        metaDescription: tDesc || md || ex,
+      };
+    } catch {
+      // Keep English as fallback so the flag still appears
+      translations[lang.code] = {
+        title: t, slug: `${baseSlug}-${lang.code}`,
+        excerpt: ex, content: plain,
+        metaTitle: mt || t, metaDescription: md || ex,
+      };
+    }
+  }
+  onProgress('');
+  return translations;
+}
+
 export const BlogEditorPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
@@ -106,6 +146,7 @@ export const BlogEditorPage: React.FC = () => {
   const [metaTitle, setMetaTitle] = useState('');
   const [metaDescription, setMetaDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState('');
   const [submitError, setSubmitError] = useState('');
@@ -135,46 +176,6 @@ export const BlogEditorPage: React.FC = () => {
     }
   };
 
-  // ─── Build all translations directly in the browser ───────────────────────
-  const buildTranslations = async (
-    baseSlug: string,
-    t: string, ex: string, body: string, mt: string, md: string
-  ): Promise<Translations> => {
-    const plain = stripHtml(body);
-    const translations: Translations = {};
-    const langs = SUPPORTED_LANGUAGES.filter(l => l.code !== 'en');
-
-    for (const lang of langs) {
-      setProgress(`Translating to ${lang.name} ${lang.flag}…`);
-      try {
-        const [tTitle, tExcerpt, tContent, tMeta, tDesc] = await Promise.all([
-          googleTranslate(t, lang.code),
-          googleTranslate(ex, lang.code),
-          googleTranslate(plain, lang.code),
-          googleTranslate(mt || t, lang.code),
-          googleTranslate(md || ex, lang.code),
-        ]);
-        translations[lang.code] = {
-          title: tTitle || t,
-          slug: `${baseSlug}-${lang.code}`,
-          excerpt: tExcerpt || ex,
-          content: tContent || plain,
-          metaTitle: tMeta || mt || t,
-          metaDescription: tDesc || md || ex,
-        };
-      } catch {
-        // Keep English as fallback so the flag still appears
-        translations[lang.code] = {
-          title: t, slug: `${baseSlug}-${lang.code}`,
-          excerpt: ex, content: plain,
-          metaTitle: mt || t, metaDescription: md || ex,
-        };
-      }
-    }
-    setProgress('');
-    return translations;
-  };
-
   // ─── Publish / Update ─────────────────────────────────────────────────────
   const handleSubmit = async () => {
     setSubmitError('');
@@ -196,32 +197,59 @@ export const BlogEditorPage: React.FC = () => {
       };
 
       let savedId: string;
+      let finalSlug = postSlug;
+
       if (isEditing && existingPost) {
-        store.updatePost(existingPost.id, postData, false);
+        await store.updatePost(existingPost.id, postData);
         savedId = existingPost.id;
       } else {
-        const newPost = store.createPost(postData, false);
+        const newPost = await store.createPost(postData);
         savedId = newPost.id;
+        finalSlug = newPost.slug || postSlug;
       }
 
+      // Build all translations before navigating — post not shown until ready
       const translations = await buildTranslations(
-        postSlug,
+        finalSlug,
         postData.title, postData.excerpt, postData.content,
-        postData.metaTitle, postData.metaDescription
+        postData.metaTitle, postData.metaDescription,
+        setProgress,
       );
 
-      if (typeof store.setPostTranslations === 'function') {
-        store.setPostTranslations(savedId, translations);
-      } else {
-        store.updatePost(savedId, { translations } as Parameters<typeof store.updatePost>[1], false);
-      }
+      // Save translations to store and backend atomically
+      store.setPostTranslations(savedId, translations);
 
-      navigate(`/blog/${postSlug}`);
+      navigate(`/blog/${finalSlug}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
       setSubmitError(msg);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // ─── Translate existing post (for seed posts or re-translate) ─────────────
+  const handleTranslateExisting = async () => {
+    if (!existingPost) return;
+    setIsTranslating(true);
+    setSubmitError('');
+    try {
+      const translations = await buildTranslations(
+        existingPost.slug,
+        existingPost.title,
+        existingPost.excerpt,
+        existingPost.content,
+        existingPost.metaTitle || existingPost.title,
+        existingPost.metaDescription || existingPost.excerpt,
+        setProgress,
+      );
+      store.setPostTranslations(existingPost.id, translations);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Translation failed.';
+      setSubmitError(msg);
+    } finally {
+      setIsTranslating(false);
+      setProgress('');
     }
   };
 
@@ -255,7 +283,9 @@ export const BlogEditorPage: React.FC = () => {
   }
   if (!isOwner()) return null;
 
-  const translationUrls = existingPost
+  const hasTranslations = existingPost && existingPost.translations && Object.keys(existingPost.translations).length > 0;
+
+  const translationUrls = existingPost && hasTranslations
     ? [
         { lang: 'en', flag: '🇬🇧', name: 'English', url: `/blog/${existingPost.slug}` },
         ...SUPPORTED_LANGUAGES
@@ -284,12 +314,25 @@ export const BlogEditorPage: React.FC = () => {
                 <Trash2 className="h-4 w-4 mr-2" />Delete
               </Button>
             )}
+            {isEditing && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTranslateExisting}
+                disabled={isTranslating || isSubmitting}
+              >
+                {isTranslating
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{progress || 'Translating…'}</>
+                  : <><Globe className="h-4 w-4 mr-2" />{hasTranslations ? 'Re-translate' : 'Translate All'}</>
+                }
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={handlePreview}>
               <Eye className="h-4 w-4 mr-2" />Preview
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isSubmitting || !title.trim() || !excerpt.trim() || !content.trim()}
+              disabled={isSubmitting || isTranslating || !title.trim() || !excerpt.trim() || !content.trim()}
               className="bg-blue-600 hover:bg-blue-700"
             >
               {isSubmitting ? (
@@ -306,7 +349,7 @@ export const BlogEditorPage: React.FC = () => {
         {submitError && (
           <div className="mb-6 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-red-700 text-sm">{submitError}</div>
         )}
-        {isSubmitting && progress && (
+        {(isSubmitting || isTranslating) && progress && (
           <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-center gap-3">
             <Loader2 className="h-4 w-4 text-blue-600 animate-spin flex-shrink-0" />
             <p className="text-sm text-blue-700">{progress}</p>
@@ -314,7 +357,7 @@ export const BlogEditorPage: React.FC = () => {
         )}
 
         {/* Existing translation URLs */}
-        {isEditing && translationUrls.length > 1 && (
+        {translationUrls.length > 1 && (
           <Card className="mb-6 border-green-200 bg-green-50">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-green-800 text-base">
@@ -337,6 +380,17 @@ export const BlogEditorPage: React.FC = () => {
                   </div>
                 ))}
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* No translations yet — prompt owner to translate */}
+        {isEditing && !hasTranslations && !isTranslating && (
+          <Card className="mb-6 border-yellow-200 bg-yellow-50">
+            <CardContent className="pt-4">
+              <p className="text-sm text-yellow-800">
+                This post has no translations yet. Click <strong>Translate All</strong> above to generate static translated URLs for all 15 languages.
+              </p>
             </CardContent>
           </Card>
         )}
@@ -424,7 +478,7 @@ export const BlogEditorPage: React.FC = () => {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-blue-700 mb-3">
-                Translation runs directly in your browser using Google Translate — no server limits, accurate results.
+                Each language gets its own static URL before the post goes live. SEO meta title and description are translated too. Translation runs directly in your browser using Google Translate.
               </p>
               <div className="flex flex-wrap gap-2">
                 {SUPPORTED_LANGUAGES.filter(l => l.code !== 'en').map(lang => (

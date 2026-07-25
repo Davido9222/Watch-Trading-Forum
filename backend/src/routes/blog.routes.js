@@ -1,7 +1,7 @@
 const express = require('express');
 const { auth, requireRole } = require('../middleware/auth');
 const Blog = require('../models/Blog');
-const { translateText, stripHtml } = require('../utils/translate');
+const { translateText, stripHtml, textToHtml } = require('../utils/translate');
 
 const router = express.Router();
 
@@ -35,17 +35,19 @@ async function translatePostObject(post) {
   const baseSlug = post.slug;
   const metaTitle = post.metaTitle || post.title;
   const metaDescription = post.metaDescription || post.excerpt;
+  // Strip HTML to plain text for translation — paragraph breaks become \n\n
   const plainContent = stripHtml(post.content);
   const translations = {};
 
   for (const { code, gt } of TRANSLATE_LANGS) {
     try {
       if (gt === 'en') {
+        // Nigerian Pidgin: keep English but still wrap content as HTML
         translations[code] = {
           title: post.title,
           slug: `${baseSlug}-${code}`,
           excerpt: post.excerpt,
-          content: plainContent,
+          content: textToHtml(plainContent),
           metaTitle,
           metaDescription,
         };
@@ -64,7 +66,9 @@ async function translatePostObject(post) {
         title: tTitle || post.title,
         slug: `${baseSlug}-${code}`,
         excerpt: tExcerpt || post.excerpt,
-        content: tContent || plainContent,
+        // Convert translated plain text back to <p>-wrapped HTML so
+        // dangerouslySetInnerHTML renders line spacing correctly
+        content: textToHtml(tContent) || textToHtml(plainContent),
         metaTitle: tMeta || metaTitle,
         metaDescription: tDesc || metaDescription,
       };
@@ -76,7 +80,7 @@ async function translatePostObject(post) {
         title: post.title,
         slug: `${baseSlug}-${code}`,
         excerpt: post.excerpt,
-        content: plainContent,
+        content: textToHtml(plainContent),
         metaTitle,
         metaDescription,
       };

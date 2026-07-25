@@ -28,6 +28,20 @@ function stripHtml(html) {
     .trim();
 }
 
+// ─── Convert translated plain text back to HTML paragraphs ───────────────────
+// After translation the content is plain text with \n separators.
+// This wraps each paragraph in <p> tags and inline breaks in <br> so that
+// dangerouslySetInnerHTML renders the same spacing as the original English post.
+function textToHtml(text) {
+  if (!text || !text.trim()) return '';
+  return text
+    .split(/\n\n+/)
+    .map(para => para.trim())
+    .filter(Boolean)
+    .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+    .join('\n');
+}
+
 // ─── HTTPS GET with timeout (no external deps) ───────────────────────────────
 function httpsGet(url, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
@@ -134,4 +148,4 @@ async function translateTexts(texts, targetLang) {
   return results;
 }
 
-module.exports = { translateTexts, translateText, stripHtml };
+module.exports = { translateTexts, translateText, stripHtml, textToHtml };

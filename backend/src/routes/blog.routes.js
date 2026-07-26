@@ -1,7 +1,7 @@
 const express = require('express');
 const { auth, requireRole } = require('../middleware/auth');
 const Blog = require('../models/Blog');
-const { translateText, stripHtml, textToHtml } = require('../utils/translate');
+const { translateText, stripHtml, translateHtmlContent } = require('../utils/translate');
 
 const router = express.Router();
 
@@ -13,74 +13,62 @@ const toClient = (doc) => {
 
 // Languages to translate into (all supported except English)
 const TRANSLATE_LANGS = [
-  { code: 'zh', gt: 'zh-CN' },
-  { code: 'hi', gt: 'hi' },
-  { code: 'es', gt: 'es' },
-  { code: 'fr', gt: 'fr' },
-  { code: 'ar', gt: 'ar' },
-  { code: 'bn', gt: 'bn' },
-  { code: 'pt', gt: 'pt' },
-  { code: 'ru', gt: 'ru' },
-  { code: 'nl', gt: 'nl' },
-  { code: 'ur', gt: 'ur' },
-  { code: 'id', gt: 'id' },
-  { code: 'de', gt: 'de' },
-  { code: 'ja', gt: 'ja' },
-  { code: 'pcm', gt: 'en' }, // Nigerian Pidgin — fallback to English
-  { code: 'mr', gt: 'mr' },
+  { code: 'zh' },
+  { code: 'hi' },
+  { code: 'es' },
+  { code: 'fr' },
+  { code: 'ar' },
+  { code: 'bn' },
+  { code: 'pt' },
+  { code: 'ru' },
+  { code: 'nl' },
+  { code: 'ur' },
+  { code: 'id' },
+  { code: 'de' },
+  { code: 'ja' },
+  { code: 'pcm' }, // Nigerian Pidgin — Google maps to 'en' so content stays English
+  { code: 'mr' },
 ];
 
-// ─── Helper: translate a post object into all languages ──────────────────────
+// ─── Helper: translate a post into all languages ─────────────────────────────
 async function translatePostObject(post) {
   const baseSlug = post.slug;
   const metaTitle = post.metaTitle || post.title;
   const metaDescription = post.metaDescription || post.excerpt;
-  // Strip HTML to plain text for translation — paragraph breaks become \n\n
-  const plainContent = stripHtml(post.content);
   const translations = {};
 
-  for (const { code, gt } of TRANSLATE_LANGS) {
+  for (const { code } of TRANSLATE_LANGS) {
     try {
-      if (gt === 'en') {
-        // Nigerian Pidgin: keep English but still wrap content as HTML
-        translations[code] = {
-          title: post.title,
-          slug: `${baseSlug}-${code}`,
-          excerpt: post.excerpt,
-          content: textToHtml(plainContent),
-          metaTitle,
-          metaDescription,
-        };
-        continue;
-      }
-
-      const [tTitle, tExcerpt, tContent, tMeta, tDesc] = await Promise.all([
+      // Short plain-text fields: title, excerpt, meta
+      const [tTitle, tExcerpt, tMeta, tDesc] = await Promise.all([
         translateText(post.title, code),
         translateText(post.excerpt, code),
-        translateText(plainContent, code),
         translateText(metaTitle, code),
         translateText(metaDescription, code),
       ]);
 
+      // Content: translate block-by-block to preserve paragraph/heading structure
+      const tContent = await translateHtmlContent(post.content, code);
+
       translations[code] = {
-        title: tTitle || post.title,
-        slug: `${baseSlug}-${code}`,
-        excerpt: tExcerpt || post.excerpt,
-        // Convert translated plain text back to <p>-wrapped HTML so
-        // dangerouslySetInnerHTML renders line spacing correctly
-        content: textToHtml(tContent) || textToHtml(plainContent),
-        metaTitle: tMeta || metaTitle,
-        metaDescription: tDesc || metaDescription,
+        title:           tTitle           || post.title,
+        slug:            `${baseSlug}-${code}`,
+        excerpt:         tExcerpt         || post.excerpt,
+        content:         tContent         || post.content,
+        metaTitle:       tMeta            || metaTitle,
+        metaDescription: tDesc            || metaDescription,
       };
 
+      // Pause between languages to respect rate limits
       await new Promise(r => setTimeout(r, 300));
     } catch (err) {
       console.error(`[translate] Failed for lang ${code}:`, err.message);
+      // Fallback: keep English content so the post is still readable
       translations[code] = {
-        title: post.title,
-        slug: `${baseSlug}-${code}`,
-        excerpt: post.excerpt,
-        content: textToHtml(plainContent),
+        title:           post.title,
+        slug:            `${baseSlug}-${code}`,
+        excerpt:         post.excerpt,
+        content:         post.content,
         metaTitle,
         metaDescription,
       };
@@ -147,13 +135,12 @@ router.post('/:id/view', async (req, res) => {
 });
 
 // ── POST /api/blog/:id/translate  — owner only ───────────────────────────────
-// Translates a post into all 15 supported languages server-side and saves.
 router.post('/:id/translate', auth, requireRole('owner'), async (req, res) => {
   try {
     const post = await Blog.findById(req.params.id).lean();
     if (!post) return res.status(404).json({ message: 'Post not found' });
 
-    console.log(`[translate] Starting translation for post: ${post.slug}`);
+    console.log(`[translate] Starting for: ${post.slug}`);
     const translations = await translatePostObject(post);
 
     const updated = await Blog.findByIdAndUpdate(
@@ -161,7 +148,7 @@ router.post('/:id/translate', auth, requireRole('owner'), async (req, res) => {
       { $set: { translations } },
       { new: true },
     );
-    console.log(`[translate] Done for post: ${post.slug}`);
+    console.log(`[translate] Done for: ${post.slug}`);
     res.json(toClient(updated));
   } catch (err) {
     console.error('[translate] Error:', err.message);
